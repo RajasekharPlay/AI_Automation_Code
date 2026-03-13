@@ -42,6 +42,16 @@ export const fetchRun = async (id: string) => {
   return data;
 };
 
+export const deleteRun = async (id: string) => {
+  const { data } = await api.delete(`/api/runs/${id}`);
+  return data;
+};
+
+export const cancelRun = async (id: string) => {
+  const { data } = await api.patch(`/api/runs/${id}/cancel`);
+  return data;
+};
+
 export const startRun = async (params: {
   script_id: string;
   environment: string;
@@ -54,6 +64,36 @@ export const startRun = async (params: {
   const fd = new FormData();
   Object.entries(params).forEach(([k, v]) => fd.append(k, v));
   const { data } = await api.post('/api/run-test', fd);
+  return data;
+};
+
+// ── Spec Files (from GitHub branch) ──────────────────────────────────────
+export const fetchSpecFiles = async (branch?: string) => {
+  const params = branch ? { branch } : {};
+  const { data } = await api.get('/api/spec-files', { params });
+  return data;
+};
+
+export const runSpec = async (params: {
+  spec_file_path: string;
+  branch: string;
+  environment: string;
+  browser: string;
+  device: string;
+  execution_mode: string;
+  tags: string;
+}) => {
+  console.log('[client.ts] runSpec called with execution_mode:', params.execution_mode);
+  const fd = new FormData();
+  Object.entries(params).forEach(([k, v]) => fd.append(k, v));
+  // Log what FormData actually contains
+  console.log('[client.ts] FormData entries:', [...fd.entries()].map(([k, v]) => `${k}=${v}`).join(', '));
+  const { data } = await api.post('/api/run-spec', fd);
+  return data;
+};
+
+export const ensureBranch = async () => {
+  const { data } = await api.post('/api/ensure-branch');
   return data;
 };
 

@@ -38,6 +38,13 @@ from framework_loader import get_framework_context, invalidate_cache
 from llm_orchestrator import stream_script, active_provider_info
 from script_validator import validate_with_self_correction
 from execution_engine import run_test, save_script_to_framework
+from github_actions_runner import (
+    list_spec_files_from_branch,
+    ensure_ai_tests_branch,
+    commit_spec_to_ai_branch,
+    run_existing_spec_via_gha,
+    AI_TESTS_BRANCH,
+)
 from websocket_manager import ws_manager, redis_log_subscriber
 
 logging.basicConfig(level=logging.INFO)
@@ -206,6 +213,15 @@ async def generate_script_endpoint(
             file_rel_path = await save_script_to_framework(
                 full_script, tc_script_num, tc_module
             )
+
+            # Also commit to the AI tests branch on GitHub
+            spec_filename = Path(file_rel_path).name
+            try:
+                commit_sha = await commit_spec_to_ai_branch(spec_filename, full_script)
+                logger.info("Spec committed to '%s' branch: %s", AI_TESTS_BRANCH, commit_sha[:8])
+                yield f"data: {json.dumps({'type': 'status', 'message': f'Committed to {AI_TESTS_BRANCH} branch'})}\n\n"
+            except Exception as commit_err:
+                logger.warning("Failed to commit spec to %s: %s", AI_TESTS_BRANCH, commit_err)
 
             # ── Persist to DB using a fresh session ──────────────────────────────
             # The request-scoped `db` session was already committed & closed by
@@ -506,7 +522,9 @@ async def list_runs(db: AsyncSession = Depends(get_db)):
     return [
         {
             "id": str(r.id),
-            "script_id": str(r.script_id),
+            "script_id": str(r.script_id) if r.script_id else None,
+            "spec_file_path": r.spec_file_path,
+            "spec_branch": r.spec_branch,
             "environment": r.environment,
             "browser": r.browser,
             "device": r.device,
@@ -563,6 +581,45 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
     }
 
 
+@app.delete("/api/runs/{run_id}")
+async def delete_run(run_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a run record from the database."""
+    r = await db.get(ExecutionRun, uuid.UUID(run_id))
+    if not r:
+        raise HTTPException(404, "Run not found")
+    await db.delete(r)
+    await db.commit()
+    return {"deleted": run_id}
+
+
+@app.patch("/api/runs/{run_id}/cancel")
+async def cancel_run(run_id: str, db: AsyncSession = Depends(get_db)):
+    """Mark a queued/running run as cancelled (failed) and set end_time."""
+    from datetime import datetime
+    r = await db.get(ExecutionRun, uuid.UUID(run_id))
+    if not r:
+        raise HTTPException(404, "Run not found")
+    if r.status not in (ExecutionStatus.queued, ExecutionStatus.running):
+        raise HTTPException(400, f"Run is already {r.status} — cannot cancel")
+    r.status = ExecutionStatus.failed
+    r.end_time = datetime.utcnow()
+    r.exit_code = -1
+    await db.commit()
+    # Publish a cancellation message so the WebSocket client sees it
+    import redis.asyncio as aioredis
+    red = aioredis.from_url(settings.REDIS_URL)
+    try:
+        channel = f"run:{run_id}:logs"
+        history_key = f"run:{run_id}:log_history"
+        await red.publish(channel, "🛑 Run cancelled by user")
+        await red.rpush(history_key, "🛑 Run cancelled by user")
+        await red.publish(channel, "__DONE__")
+        await red.rpush(history_key, "__DONE__")
+    finally:
+        await red.aclose()
+    return {"cancelled": run_id, "status": "failed"}
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # 5. ALLURE REPORT SERVING
 # ════════════════════════════════════════════════════════════════════════════════
@@ -610,7 +667,126 @@ async def websocket_run(run_id: str, ws: WebSocket):
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# 8. HEALTH CHECK
+# 8. SPEC FILES — list & run from GitHub branch
+# ════════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/spec-files")
+async def list_spec_files(branch: str = ""):
+    """
+    List all .spec.ts files from skye-e2e-tests/tests/ in the AI tests branch.
+    Also checks the ai-tests-staging and ai-generated-tests branches.
+    """
+    target_branch = branch.strip() or AI_TESTS_BRANCH
+    specs = await list_spec_files_from_branch(target_branch)
+
+    # Also include specs from staging and results branches for completeness
+    if not branch:
+        for extra_branch in ["ai-tests-staging", "ai-generated-tests"]:
+            extra_specs = await list_spec_files_from_branch(extra_branch)
+            # Avoid duplicates by path
+            existing_paths = {s["path"] for s in specs}
+            for s in extra_specs:
+                if s["path"] not in existing_paths:
+                    specs.append(s)
+                    existing_paths.add(s["path"])
+
+    return {"specs": specs, "default_branch": target_branch}
+
+
+@app.post("/api/run-spec")
+async def run_spec_endpoint(
+    spec_file_path: str = Form(...),    # e.g. "skye-e2e-tests/tests/generated/RB001_Pets.spec.ts"
+    branch: str = Form(...),            # branch where the file lives
+    environment: str = Form(...),
+    browser: str = Form(...),
+    device: str = Form(...),
+    execution_mode: str = Form(...),
+    tags: str = Form(default=""),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Run an existing spec file from a GitHub branch via GitHub Actions.
+    Unlike /api/run-test, this doesn't require a DB script record.
+    """
+    logger.info("POST /api/run-spec → execution_mode=%r, browser=%r, env=%r", execution_mode, browser, environment)
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+
+    run = ExecutionRun(
+        script_id=None,
+        spec_file_path=spec_file_path,
+        spec_branch=branch,
+        environment=environment,
+        browser=browser,
+        device=device,
+        execution_mode=execution_mode,
+        browser_version="stable",
+        tags=tag_list,
+        status=ExecutionStatus.queued,
+    )
+    db.add(run)
+    await db.flush()
+    run_id = str(run.id)
+
+    await db.commit()
+
+    asyncio.create_task(
+        _execute_spec_and_update(
+            run_id, spec_file_path, branch, environment,
+            browser, device, execution_mode,
+        )
+    )
+
+    return {"run_id": run_id, "status": "queued"}
+
+
+async def _execute_spec_and_update(
+    run_id: str,
+    spec_file_path: str,
+    branch: str,
+    environment: str,
+    browser: str,
+    device: str,
+    execution_mode: str,
+):
+    from datetime import datetime
+
+    async with AsyncSessionLocal() as db:
+        run = await db.get(ExecutionRun, uuid.UUID(run_id))
+        if not run:
+            return
+        run.status = ExecutionStatus.running
+        run.start_time = datetime.utcnow()
+        await db.commit()
+
+    exit_code, github_run_url = await run_existing_spec_via_gha(
+        run_id=run_id,
+        spec_file_path=spec_file_path,
+        branch=branch,
+        browser=browser,
+        environment=environment,
+        device=device,
+        execution_mode=execution_mode,
+    )
+
+    async with AsyncSessionLocal() as db:
+        run = await db.get(ExecutionRun, uuid.UUID(run_id))
+        if run:
+            run.end_time = datetime.utcnow()
+            run.exit_code = exit_code
+            run.status = ExecutionStatus.passed if exit_code == 0 else ExecutionStatus.failed
+            run.allure_report_path = github_run_url
+            await db.commit()
+
+
+@app.post("/api/ensure-branch")
+async def ensure_branch_endpoint():
+    """Create the AI tests branch if it doesn't exist."""
+    branch = await ensure_ai_tests_branch()
+    return {"branch": branch, "message": f"Branch '{branch}' is ready"}
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 9. HEALTH CHECK
 # ════════════════════════════════════════════════════════════════════════════════
 
 @app.get("/health")

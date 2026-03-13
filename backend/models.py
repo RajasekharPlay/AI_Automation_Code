@@ -83,9 +83,11 @@ class ExecutionRun(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    script_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("generated_scripts.id"), nullable=False
+    script_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("generated_scripts.id"), nullable=True
     )
+    spec_file_path: Mapped[Optional[str]] = mapped_column(String(500))       # GitHub path when running by file
+    spec_branch: Mapped[Optional[str]] = mapped_column(String(200))          # branch the spec was run from
     # Execution parameters (all dropdown values)
     environment: Mapped[str] = mapped_column(String(20), nullable=False)     # dev/sit/uat
     browser: Mapped[str] = mapped_column(String(20), nullable=False)          # chromium/firefox/webkit
@@ -103,7 +105,7 @@ class ExecutionRun(Base):
     allure_report_path: Mapped[Optional[str]] = mapped_column(String(500))
     exit_code: Mapped[Optional[int]] = mapped_column(Integer)
 
-    script: Mapped["GeneratedScript"] = relationship(back_populates="runs")
+    script: Mapped[Optional["GeneratedScript"]] = relationship(back_populates="runs")
 
 
 # ── Prompt Audit ─────────────────────────────────────────────────────────────────

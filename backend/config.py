@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     PLAYWRIGHT_PROJECT_PATH: str
     GENERATED_TESTS_DIR: str = "tests/generated"
 
+    # ── AI Tests Branch ────────────────────────────────────────────────────
+    AI_TESTS_BRANCH: str = "ai-playwright-tests"
+
     # ── App ───────────────────────────────────────────────────────────────────
     FRONTEND_URL: str = "http://localhost:5174"
     SECRET_KEY: str = "change-me"

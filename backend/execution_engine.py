@@ -48,6 +48,7 @@ async def run_test(
         browser=browser,
         environment=environment,
         device=device,
+        execution_mode=execution_mode,
     )
     return exit_code, github_run_url, committed_branch
 

@@ -535,11 +535,74 @@ the page context closes before Step 2 can interact.
 
 ---
 
+## Session 14 — Spec Files Dropdown + GitHub Actions Integration
+
+### Feature: Run spec files from GitHub branch via dropdown
+
+#### 1. New branch `ai-playwright-tests` created
+- Branch created in `RajasekharPlay/QA_Automation_Banorte` via GitHub API
+- AI-generated spec files are now committed to this branch automatically
+- Branch created from `main` HEAD
+
+#### 2. Backend: New endpoints
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/spec-files` | Lists all .spec.ts files from `ai-playwright-tests` branch (+ staging/results) |
+| POST | `/api/run-spec` | Run an existing spec file by path via GitHub Actions |
+| POST | `/api/ensure-branch` | Create `ai-playwright-tests` branch if it doesn't exist |
+
+#### 3. Backend: `github_actions_runner.py` — new functions
+- `list_spec_files_from_branch(branch)` — Uses GitHub recursive tree API to find .spec.ts files
+- `ensure_ai_tests_branch()` — Creates `ai-playwright-tests` branch if needed
+- `commit_spec_to_ai_branch(spec_filename, code)` — Commits spec to AI tests branch
+- `run_existing_spec_via_gha(run_id, spec_path, branch, ...)` — Triggers GHA for existing files (no commit needed)
+
+#### 4. Backend: `config.py` — new setting
+- `AI_TESTS_BRANCH: str = "ai-playwright-tests"` — branch where AI-generated specs live
+
+#### 5. Database: `execution_runs` table changes
+- `script_id` → nullable (was NOT NULL) — allows running specs without DB script records
+- Added `spec_file_path VARCHAR(500)` — GitHub path of the spec file being run
+- Added `spec_branch VARCHAR(200)` — branch the spec was run from
+- Migration applied via direct ALTER TABLE (no alembic)
+
+#### 6. AI generation flow updated
+- `generate_script_endpoint` now also commits generated specs to `ai-playwright-tests` branch
+- Spec files are available in the Run tab dropdown immediately after generation
+
+#### 7. Frontend: `RunTab.tsx` completely rewritten
+- **Old:** Selected scripts from DB (generated_scripts table) by script_id
+- **New:** Selects spec files from GitHub branch via `/api/spec-files` dropdown
+- Each dropdown item shows: filename + branch tag
+- Refresh button to re-fetch spec files from GitHub
+- Empty state when no spec files exist
+- Execution params: Environment, Browser, Device, Mode, Tags (unchanged)
+- Run button calls `POST /api/run-spec` with spec file path + branch
+- Live logs via WebSocket + HTTP polling fallback (unchanged)
+- Execution history table shows spec_file_path instead of script_id
+
+#### 8. Frontend: `api/client.ts` — new functions
+- `fetchSpecFiles(branch?)` — GET /api/spec-files
+- `runSpec(params)` — POST /api/run-spec
+- `ensureBranch()` — POST /api/ensure-branch
+
+#### 9. Frontend: `types/index.ts` — new types
+- `SpecFile` interface: name, path, sha, size, branch
+- `ExecutionRun` updated: script_id optional, added spec_file_path, spec_branch
+
+### Key Flow (after this session):
+1. **AI Phase tab:** Generate script → saved locally + committed to `ai-playwright-tests` branch
+2. **Run tab:** Dropdown lists all .spec.ts files from `ai-playwright-tests` branch
+3. **Select spec** → configure browser/device/env/mode → click Run
+4. **Backend:** Verifies file exists on branch → triggers `workflow_dispatch` on `main`
+5. **GitHub Actions:** Runs the test with configured parameters
+6. **Live logs:** Stream via WebSocket → show progress + GHA link
+
+---
+
 ## 🔜 Future Improvements (Not Yet Done)
 
 - [ ] Self-correction loop: if `tsc --noEmit` fails, re-prompt LLM with error to fix it
-- [ ] Run tab: stream live playwright output via WebSocket more reliably
 - [ ] Dashboard: real-time run status polling
-- [ ] Save generated script to Git (commit to framework repo)
 - [ ] Support multiple Excel sheets in one upload
 - [ ] Token usage tracking dashboard (compare Anthropic vs Gemini cost)

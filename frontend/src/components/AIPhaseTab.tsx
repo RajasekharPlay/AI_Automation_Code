@@ -1,12 +1,5 @@
 /**
- * AI Phase Tab
- * ============
- * 1. Upload .xlsx  →  preview parsed test cases
- * 2. Choose LLM provider (Anthropic Claude / Google Gemini)
- * 3. Select one or more test cases (checkboxes), optionally write extra instructions
- * 4. Click "Generate N Scripts" — runs sequentially, showing live progress
- * 5. Monaco editor shows the last generated script in real time
- * 6. Batch summary card shows ✅/❌ per test case after completion
+ * AI Phase Tab — Restyled with deep navy theme
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
@@ -16,12 +9,13 @@ import {
 import {
   UploadOutlined, ThunderboltOutlined, CheckCircleOutlined,
   CloseCircleOutlined, ReloadOutlined, CopyOutlined,
-  RobotOutlined, StopOutlined,
+  RobotOutlined, StopOutlined, CloudUploadOutlined,
 } from '@ant-design/icons';
 import Editor from '@monaco-editor/react';
 import toast from 'react-hot-toast';
 import { uploadExcel, createScriptStream, refreshFramework, fetchLLMProvider } from '../api/client';
 import type { TestCase } from '../types';
+import { colors, gradients } from '../theme';
 
 type LLMProvider = 'anthropic' | 'gemini';
 
@@ -56,7 +50,6 @@ export default function AIPhaseTab() {
   const abortRef       = useRef<boolean>(false);
   const stopCurrentRef = useRef<(() => void) | null>(null);
 
-  // ── LLM Provider ────────────────────────────────────────────────────────────
   const [provider, setProvider]         = useState<LLMProvider>('anthropic');
   const [providerInfo, setProviderInfo] = useState<ProviderInfo | null>(null);
 
@@ -66,10 +59,9 @@ export default function AIPhaseTab() {
         setProviderInfo(info);
         setProvider(info.default_provider);
       })
-      .catch(() => { /* silently ignore if backend not up yet */ });
+      .catch(() => {});
   }, []);
 
-  // ── Excel upload ─────────────────────────────────────────────────────────────
   const handleUpload = useCallback(async (file: File) => {
     setUploading(true);
     try {
@@ -83,10 +75,9 @@ export default function AIPhaseTab() {
     } finally {
       setUploading(false);
     }
-    return false; // prevent antd default upload behaviour
+    return false;
   }, []);
 
-  // ── Generate one script — returns a Promise ──────────────────────────────────
   const generateOne = useCallback(
     (tcId: string): Promise<BatchResult> => {
       return new Promise((resolve) => {
@@ -98,7 +89,7 @@ export default function AIPhaseTab() {
           instruction,
           (chunk) => {
             localCode += chunk;
-            setScriptCode(localCode); // stream into Monaco in real time
+            setScriptCode(localCode);
           },
           (scriptId, isValid, errors) => {
             resolve({
@@ -128,7 +119,6 @@ export default function AIPhaseTab() {
     [testCases, instruction, provider],
   );
 
-  // ── Batch generate — loops sequentially ─────────────────────────────────────
   const handleGenerate = async () => {
     if (selectedTcIds.length === 0) {
       toast.error('Select at least one test case');
@@ -155,12 +145,12 @@ export default function AIPhaseTab() {
     setBatchProgress(null);
 
     if (!abortRef.current) {
-      const passed = results.filter((r) => r.isValid).length;
-      const failed = results.length - passed;
-      if (failed === 0) {
-        toast.success(`${passed} script${passed !== 1 ? 's' : ''} generated ✅`);
+      const passedCount = results.filter((r) => r.isValid).length;
+      const failedCount = results.length - passedCount;
+      if (failedCount === 0) {
+        toast.success(`${passedCount} script${passedCount !== 1 ? 's' : ''} generated`);
       } else {
-        toast(`${passed} ✅  ${failed} ❌ — see results below`, { icon: '📋' });
+        toast(`${passedCount} passed  ${failedCount} failed`, { icon: '📋' });
       }
     } else {
       toast('Generation stopped');
@@ -174,7 +164,6 @@ export default function AIPhaseTab() {
     setBatchProgress(null);
   };
 
-  // ── Framework refresh ────────────────────────────────────────────────────────
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
@@ -187,19 +176,21 @@ export default function AIPhaseTab() {
     }
   };
 
-  // ── Copy to clipboard ────────────────────────────────────────────────────────
   const copyScript = () => {
     navigator.clipboard.writeText(scriptCode);
     toast.success('Copied to clipboard');
   };
 
-  // ── Table columns ────────────────────────────────────────────────────────────
   const columns = [
     {
       title: 'Script #',
       dataIndex: 'test_script_num',
       width: 95,
-      render: (v: string) => <Tag color="blue">{v}</Tag>,
+      render: (v: string) => (
+        <Tag style={{ background: `${colors.primary}22`, color: colors.primaryLight, border: 'none', borderRadius: 4 }}>
+          {v}
+        </Tag>
+      ),
     },
     { title: 'Module', dataIndex: 'module', width: 160 },
     { title: 'Test Case', dataIndex: 'test_case_name', ellipsis: true },
@@ -207,11 +198,10 @@ export default function AIPhaseTab() {
       title: 'Steps',
       dataIndex: 'steps_count',
       width: 65,
-      render: (v: number) => <Badge count={v} color="geekblue" />,
+      render: (v: number) => <Badge count={v} style={{ backgroundColor: colors.primary }} />,
     },
   ];
 
-  // ── Dynamic button label ─────────────────────────────────────────────────────
   const generateButtonLabel = () => {
     if (!generating) {
       return selectedTcIds.length > 0
@@ -219,101 +209,100 @@ export default function AIPhaseTab() {
         : 'Generate Script';
     }
     if (batchProgress) {
-      return `Generating ${batchProgress.current} / ${batchProgress.total}…`;
+      return `Generating ${batchProgress.current} / ${batchProgress.total}...`;
     }
-    return 'Generating…';
+    return 'Generating...';
   };
 
   return (
-    <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 120px)' }}>
-      {/* ── LEFT PANEL ─────────────────────────────────────────────────────── */}
+    <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 130px)' }}>
+
+      {/* LEFT PANEL */}
       <div style={{ width: 520, display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
 
-        {/* 1. LLM Provider selector */}
+        {/* 1. LLM Provider */}
         <Card
           size="small"
-          title={
-            <Space>
-              <RobotOutlined />
-              <span>1. LLM Provider</span>
-            </Space>
-          }
+          className="glow-card section-card"
+          title={<Space><RobotOutlined style={{ color: colors.primaryLight }} /> <span>1. LLM Provider</span></Space>}
+          style={{ background: colors.bgCard, border: `1px solid ${colors.border}` }}
         >
           <Radio.Group
             value={provider}
             onChange={(e) => setProvider(e.target.value as LLMProvider)}
             buttonStyle="solid"
             style={{ width: '100%' }}
+            className="llm-radio"
           >
-            <Radio.Button
-              value="anthropic"
-              style={{ width: '50%', textAlign: 'center' }}
-              disabled={providerInfo ? !providerInfo.anthropic.configured : false}
-            >
-              🤖 Anthropic
+            <Radio.Button value="anthropic" style={{ width: '50%', textAlign: 'center' }}
+              disabled={providerInfo ? !providerInfo.anthropic.configured : false}>
+              Anthropic Claude
             </Radio.Button>
-            <Radio.Button
-              value="gemini"
-              style={{ width: '50%', textAlign: 'center' }}
-              disabled={providerInfo ? !providerInfo.gemini.configured : false}
-            >
-              ✨ Gemini
+            <Radio.Button value="gemini" style={{ width: '50%', textAlign: 'center' }}
+              disabled={providerInfo ? !providerInfo.gemini.configured : false}>
+              Google Gemini
             </Radio.Button>
           </Radio.Group>
 
           {providerInfo && (
             <div style={{ marginTop: 8, fontSize: 11 }}>
-              <Text type="secondary">
+              <Text style={{ color: colors.textMuted }}>
                 Model:{' '}
-                <Tag color={provider === 'anthropic' ? 'purple' : 'blue'} style={{ fontSize: 10 }}>
-                  {provider === 'anthropic'
-                    ? providerInfo.anthropic.model
-                    : providerInfo.gemini.model}
+                <Tag style={{
+                  background: provider === 'anthropic' ? `${colors.violet}22` : `${colors.info}22`,
+                  color: provider === 'anthropic' ? colors.violet : colors.infoLight,
+                  border: 'none',
+                  fontSize: 10,
+                  borderRadius: 4,
+                }}>
+                  {provider === 'anthropic' ? providerInfo.anthropic.model : providerInfo.gemini.model}
                 </Tag>
               </Text>
               {provider === 'anthropic' && !providerInfo.anthropic.configured && (
-                <div style={{ color: '#ff4d4f', marginTop: 4 }}>
-                  ⚠ ANTHROPIC_API_KEY not set in .env
-                </div>
+                <div style={{ color: colors.danger, marginTop: 4 }}>ANTHROPIC_API_KEY not set</div>
               )}
               {provider === 'gemini' && !providerInfo.gemini.configured && (
-                <div style={{ color: '#ff4d4f', marginTop: 4 }}>
-                  ⚠ GEMINI_API_KEY not set in .env
-                </div>
+                <div style={{ color: colors.danger, marginTop: 4 }}>GEMINI_API_KEY not set</div>
               )}
             </div>
           )}
         </Card>
 
         {/* 2. Upload */}
-        <Card size="small" title="2. Upload Excel">
-          <Upload
-            accept=".xlsx,.xls"
-            beforeUpload={handleUpload}
-            showUploadList={false}
-          >
-            <Button icon={<UploadOutlined />} loading={uploading} block>
-              {uploading ? 'Parsing…' : 'Upload file.xlsx'}
-            </Button>
+        <Card
+          size="small"
+          className="glow-card section-card"
+          title={<Space><CloudUploadOutlined style={{ color: colors.primaryLight }} /> <span>2. Upload Excel</span></Space>}
+          style={{ background: colors.bgCard, border: `1px solid ${colors.border}` }}
+        >
+          <Upload accept=".xlsx,.xls" beforeUpload={handleUpload} showUploadList={false}>
+            <div className="upload-area">
+              <UploadOutlined style={{ fontSize: 24, color: colors.primaryLight, marginBottom: 8 }} />
+              <div style={{ color: colors.textSecondary, fontSize: 13 }}>
+                {uploading ? 'Parsing...' : 'Click or drag .xlsx file here'}
+              </div>
+            </div>
           </Upload>
         </Card>
 
-        {/* 3. Test case list with checkboxes */}
+        {/* 3. Test cases */}
         {testCases.length > 0 && (
           <Card
             size="small"
+            className="glow-card section-card"
             title={
               <Space>
                 <span>3. Select Test Cases</span>
                 {selectedTcIds.length > 0 && (
-                  <Tag color="blue">{selectedTcIds.length} selected</Tag>
+                  <Tag style={{ background: `${colors.primary}22`, color: colors.primaryLight, border: 'none', borderRadius: 4 }}>
+                    {selectedTcIds.length} selected
+                  </Tag>
                 )}
-                <Text type="secondary" style={{ fontSize: 11 }}>
-                  ({testCases.length} loaded)
-                </Text>
+                <Text style={{ fontSize: 11, color: colors.textMuted }}>({testCases.length} loaded)</Text>
               </Space>
             }
             bodyStyle={{ padding: 0 }}
+            style={{ background: colors.bgCard, border: `1px solid ${colors.border}` }}
           >
             <Table
               dataSource={testCases}
@@ -331,27 +320,34 @@ export default function AIPhaseTab() {
           </Card>
         )}
 
-        {/* 4. Instruction */}
-        <Card size="small" title="4. Extra Instructions (optional)">
+        {/* 4. Instructions */}
+        <Card
+          size="small"
+          className="glow-card section-card"
+          title={<span>4. Extra Instructions <Text style={{ color: colors.textMuted, fontSize: 11 }}>(optional)</Text></span>}
+          style={{ background: colors.bgCard, border: `1px solid ${colors.border}` }}
+        >
           <TextArea
             rows={3}
             placeholder="e.g. Add mobile viewport assertions. Use data-testid selectors where possible."
             value={instruction}
             onChange={(e) => setInstruction(e.target.value)}
+            style={{ background: colors.bgSurface, borderColor: colors.border }}
           />
         </Card>
 
-        {/* Progress bar — visible only during batch */}
+        {/* Progress */}
         {batchProgress && (
           <Progress
             percent={Math.round((batchProgress.current / batchProgress.total) * 100)}
             format={() => `${batchProgress.current} / ${batchProgress.total}`}
-            strokeColor={{ from: '#108ee9', to: '#87d068' }}
+            strokeColor={{ from: colors.primary, to: colors.purple }}
+            trailColor={colors.bgElevated}
             size="small"
           />
         )}
 
-        {/* Generate / Stop / Refresh controls */}
+        {/* Generate / Stop / Refresh */}
         <Space.Compact block>
           <Button
             type="primary"
@@ -359,27 +355,34 @@ export default function AIPhaseTab() {
             onClick={handleGenerate}
             loading={generating}
             disabled={selectedTcIds.length === 0}
+            className="gradient-btn"
             style={{ flex: 1 }}
+            size="large"
           >
             {generateButtonLabel()}
           </Button>
           {generating && (
-            <Button danger icon={<StopOutlined />} onClick={handleStop}>
-              Stop
-            </Button>
+            <Button danger icon={<StopOutlined />} onClick={handleStop} size="large" />
           )}
           <Tooltip title="Re-fetch framework repo from GitHub">
             <Button
               icon={<ReloadOutlined />}
               loading={refreshing}
               onClick={handleRefresh}
+              size="large"
             />
           </Tooltip>
         </Space.Compact>
 
-        {/* Batch results summary */}
+        {/* Batch results */}
         {batchResults.length > 0 && (
-          <Card size="small" title="Generation Results" bodyStyle={{ padding: '8px 12px' }}>
+          <Card
+            size="small"
+            className="glow-card section-card"
+            title="Generation Results"
+            bodyStyle={{ padding: '8px 12px' }}
+            style={{ background: colors.bgCard, border: `1px solid ${colors.border}` }}
+          >
             {batchResults.map((r) => (
               <div
                 key={r.tcId}
@@ -387,19 +390,30 @@ export default function AIPhaseTab() {
                   display: 'flex',
                   alignItems: 'center',
                   gap: 8,
-                  padding: '4px 0',
-                  borderBottom: '1px solid #1f1f1f',
+                  padding: '6px 0',
+                  borderBottom: `1px solid ${colors.border}`,
                   fontSize: 12,
                 }}
               >
                 {r.isValid
-                  ? <CheckCircleOutlined style={{ color: '#52c41a', flexShrink: 0 }} />
-                  : <CloseCircleOutlined style={{ color: '#ff4d4f', flexShrink: 0 }} />}
-                <Tag color="blue" style={{ fontSize: 10, flexShrink: 0 }}>{r.tcNum}</Tag>
+                  ? <CheckCircleOutlined style={{ color: colors.success, flexShrink: 0 }} />
+                  : <CloseCircleOutlined style={{ color: colors.danger, flexShrink: 0 }} />}
+                <Tag style={{ background: `${colors.primary}22`, color: colors.primaryLight, border: 'none', fontSize: 10, flexShrink: 0, borderRadius: 4 }}>
+                  {r.tcNum}
+                </Tag>
                 <Text ellipsis={{ tooltip: r.tcName }} style={{ flex: 1, fontSize: 11 }}>
                   {r.tcName}
                 </Text>
-                <Tag color={r.isValid ? 'success' : 'error'} style={{ fontSize: 10, flexShrink: 0 }}>
+                <Tag
+                  style={{
+                    background: r.isValid ? `${colors.success}22` : `${colors.danger}22`,
+                    color: r.isValid ? colors.success : colors.danger,
+                    border: 'none',
+                    fontSize: 10,
+                    flexShrink: 0,
+                    borderRadius: 4,
+                  }}
+                >
                   {r.isValid ? 'valid' : 'invalid'}
                 </Tag>
               </div>
@@ -408,42 +422,42 @@ export default function AIPhaseTab() {
         )}
       </div>
 
-      {/* ── RIGHT PANEL — Monaco editor ──────────────────────────────────────── */}
+      {/* RIGHT PANEL — Monaco editor */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Text strong>Generated TypeScript / Playwright</Text>
+          <Text strong style={{ fontSize: 14 }}>Generated TypeScript / Playwright</Text>
           {scriptCode && (
-            <Button size="small" icon={<CopyOutlined />} onClick={copyScript}>
+            <Button size="small" icon={<CopyOutlined />} onClick={copyScript}
+              style={{ borderColor: colors.border }}>
               Copy
             </Button>
           )}
         </div>
-        <div style={{
-          flex: 1, border: '1px solid #303030', borderRadius: 6, overflow: 'hidden',
-        }}>
+        <div className={`editor-wrapper ${generating ? 'is-generating' : ''}`} style={{ flex: 1 }}>
           <Editor
             height="100%"
             language="typescript"
             theme="vs-dark"
-            value={scriptCode || '// Generated script will appear here…'}
+            value={scriptCode || '// Generated script will appear here...'}
             options={{
               readOnly: generating,
               minimap: { enabled: false },
               fontSize: 13,
               scrollBeyondLastLine: false,
               wordWrap: 'on',
+              padding: { top: 12 },
             }}
           />
         </div>
         {generating && batchProgress && (
-          <div style={{ color: '#52c41a', fontFamily: 'monospace', fontSize: 12 }}>
-            ▶ Script {batchProgress.current} / {batchProgress.total} — streaming from{' '}
-            {provider === 'gemini' ? 'Gemini' : 'Claude'}…
-          </div>
-        )}
-        {generating && !batchProgress && (
-          <div style={{ color: '#52c41a', fontFamily: 'monospace', fontSize: 12 }}>
-            ▶ Streaming from {provider === 'gemini' ? 'Gemini' : 'Claude'}…
+          <div style={{
+            color: colors.success,
+            fontFamily: '"Cascadia Code", "Fira Code", monospace',
+            fontSize: 12,
+            padding: '4px 0',
+          }}>
+            Script {batchProgress.current} / {batchProgress.total} — streaming from{' '}
+            {provider === 'gemini' ? 'Gemini' : 'Claude'}...
           </div>
         )}
       </div>

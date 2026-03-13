@@ -8,7 +8,8 @@
       "Bash(powershell.exe -Command \"\\(Get-Content ''skye-e2e-tests/tests/generated/RB001_RB_Pets__Landing_Page.spec.ts''\\) -replace ''await page\\\\.goto\\\\\\(process\\\\.env\\\\.pw_HOST!\\\\\\);'', \"\"await page.goto\\(process.env.pw_HOST!, { waitUntil: ''networkidle'' }\\);\"\" | Set-Content ''skye-e2e-tests/tests/generated/RB001_RB_Pets__Landing_Page.spec.ts''\")",
       "Bash(git push:*)",
       "Bash(powershell.exe -Command \"Select-String -Path ''skye-e2e-tests/tests/generated/RB001_RB_Pets__Landing_Page.spec.ts'' -Pattern ''goto''\")",
-      "Bash(powershell.exe -Command \"Get-Command psql -ErrorAction SilentlyContinue; Get-Command pg_isready -ErrorAction SilentlyContinue; where.exe psql 2>nul\")"
+      "Bash(powershell.exe -Command \"Get-Command psql -ErrorAction SilentlyContinue; Get-Command pg_isready -ErrorAction SilentlyContinue; where.exe psql 2>nul\")",
+      "Bash(venv/Scripts/uvicorn.exe main:app --host 127.0.0.1 --port 8000)"
     ]
   }
 }

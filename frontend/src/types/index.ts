@@ -26,7 +26,9 @@ export interface GeneratedScript {
 
 export interface ExecutionRun {
   id: string;
-  script_id: string;
+  script_id?: string;
+  spec_file_path?: string;
+  spec_branch?: string;
   environment: string;
   browser: string;
   device: string;
@@ -48,4 +50,12 @@ export interface RunParams {
   execution_mode: string;
   browser_version?: string;  // kept for API compat, always 'stable' — not exposed in UI
   tags: string[];
+}
+
+export interface SpecFile {
+  name: string;
+  path: string;
+  sha: string;
+  size: number;
+  branch: string;
 }

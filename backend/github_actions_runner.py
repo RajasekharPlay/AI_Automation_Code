@@ -25,9 +25,10 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-STAGING_BRANCH = "ai-tests-staging"
-RESULTS_BRANCH = "ai-generated-tests"
-API_BASE       = "https://api.github.com"
+STAGING_BRANCH  = "ai-tests-staging"
+RESULTS_BRANCH  = "ai-generated-tests"
+AI_TESTS_BRANCH = settings.AI_TESTS_BRANCH   # "ai-playwright-tests"
+API_BASE        = "https://api.github.com"
 
 
 # ── GitHub API helpers ──────────────────────────────────────────────────────────
@@ -141,20 +142,19 @@ async def _trigger_workflow(
     branch: str,
     inputs: dict,
 ) -> None:
-    """POST workflow_dispatch. Retries without inputs if 422."""
+    """POST workflow_dispatch with inputs."""
+    logger.info("_trigger_workflow: branch=%s inputs=%s", branch, inputs)
     resp = await client.post(
         f"{API_BASE}/repos/{_repo()}/actions/workflows/{workflow_id}/dispatches",
         headers=_headers(),
         json={"ref": branch, "inputs": inputs},
     )
     if resp.status_code == 422:
-        # Workflow may not declare inputs — trigger without them
-        logger.warning("workflow_dispatch returned 422 — retrying without inputs")
-        resp = await client.post(
-            f"{API_BASE}/repos/{_repo()}/actions/workflows/{workflow_id}/dispatches",
-            headers=_headers(),
-            json={"ref": branch},
-        )
+        # Log the error body for debugging — do NOT retry without inputs
+        # because that silently drops execution_mode, browser, etc.
+        body = resp.text
+        logger.error("workflow_dispatch 422: %s", body)
+        # Still raise so the caller knows it failed
     resp.raise_for_status()
 
 
@@ -253,6 +253,7 @@ async def run_test_via_github_actions(
     browser: str,
     environment: str,
     device: str,
+    execution_mode: str = "headless",
 ) -> tuple[int, str, str | None]:
     """
     Orchestrates the full GitHub Actions test execution flow.
@@ -288,15 +289,15 @@ async def run_test_via_github_actions(
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
 
-            # 1. Ensure staging branch exists
-            await pub(f"📂 Preparing staging branch '{STAGING_BRANCH}'…")
-            await _ensure_branch(client, STAGING_BRANCH)
+            # 1. Ensure AI tests branch exists
+            await pub(f"📂 Preparing branch '{AI_TESTS_BRANCH}'…")
+            await _ensure_branch(client, AI_TESTS_BRANCH)
 
-            # 2. Commit test file to staging branch
-            await pub(f"📝 Committing {spec_filename} to '{STAGING_BRANCH}'…")
+            # 2. Commit test file to AI tests branch
+            await pub(f"📝 Committing {spec_filename} to '{AI_TESTS_BRANCH}'…")
             await _commit_file(
                 client,
-                branch=STAGING_BRANCH,
+                branch=AI_TESTS_BRANCH,
                 file_path=file_repo_path,
                 content=script_code,
                 message=f"ci: stage {spec_filename} for test run [{run_id[:8]}]",
@@ -311,18 +312,15 @@ async def run_test_via_github_actions(
             # 4. Trigger workflow_dispatch
             triggered_at = time.time()
             inputs = {
-                "test_file":   file_repo_path,
-                "browser":     browser,
-                "environment": environment,
+                "test_file":      file_repo_path,
+                "browser":        browser,
+                "environment":    environment,
+                "execution_mode": execution_mode,
+                "device":         device,
             }
-            # ── IMPORTANT: trigger on 'main', NOT on STAGING_BRANCH ───────────
-            # workflow_dispatch runs the YAML file from the ref you specify.
-            # ai-tests-staging has an old version of playwright.yml that doesn't
-            # sync playwright.config.ts from main → ai-* projects missing.
-            # The fixed playwright.yml is on main.  The YAML itself hardcodes
-            # "checkout ai-tests-staging" so the spec file is always found there.
+            # Trigger on 'main' — workflow YAML on main checkouts ai-playwright-tests
             TRIGGER_BRANCH = "main"
-            await pub(f"🚀 Triggering workflow on '{TRIGGER_BRANCH}' (reads spec from '{STAGING_BRANCH}')…")
+            await pub(f"🚀 Triggering workflow on '{TRIGGER_BRANCH}' | mode={execution_mode} | device={device}…")
             await _trigger_workflow(client, workflow_id, TRIGGER_BRANCH, inputs)
             await pub("✓ Workflow triggered — polling for completion…")
 
@@ -354,7 +352,7 @@ async def run_test_via_github_actions(
                     await pub(f"⚠ Could not commit to '{RESULTS_BRANCH}': {e}")
             else:
                 await pub(f"⚠ Test FAILED — script NOT committed to '{RESULTS_BRANCH}'")
-                await pub(f"   File remains in '{STAGING_BRANCH}' for debugging")
+                await pub(f"   File remains in '{AI_TESTS_BRANCH}' for debugging")
 
     except Exception as exc:
         logger.exception("GitHub Actions runner error")
@@ -365,3 +363,172 @@ async def run_test_via_github_actions(
     await r.aclose()
 
     return exit_code, github_run_url, committed_branch
+
+
+# ── List spec files from GitHub branch ────────────────────────────────────────
+
+async def list_spec_files_from_branch(branch: str | None = None) -> list[dict]:
+    """
+    List all .spec.ts files under skye-e2e-tests/tests/ in the given branch.
+    Returns a list of dicts with: name, path, sha, size, download_url.
+    """
+    branch = branch or AI_TESTS_BRANCH
+    specs: list[dict] = []
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # Ensure the branch exists first
+        resp = await client.get(
+            f"{API_BASE}/repos/{_repo()}/git/ref/heads/{branch}",
+            headers=_headers(),
+        )
+        if resp.status_code == 404:
+            logger.info("Branch '%s' does not exist yet", branch)
+            return []
+
+        # Use recursive tree API to get all files under tests/
+        resp = await client.get(
+            f"{API_BASE}/repos/{_repo()}/git/trees/{branch}",
+            headers=_headers(),
+            params={"recursive": "1"},
+        )
+        if resp.status_code != 200:
+            logger.warning("Failed to fetch tree for branch '%s': %s", branch, resp.status_code)
+            return []
+
+        tree = resp.json().get("tree", [])
+        for item in tree:
+            path = item.get("path", "")
+            if (
+                item.get("type") == "blob"
+                and path.startswith("skye-e2e-tests/tests/")
+                and path.endswith(".spec.ts")
+            ):
+                filename = path.split("/")[-1]
+                specs.append({
+                    "name": filename,
+                    "path": path,
+                    "sha": item.get("sha", ""),
+                    "size": item.get("size", 0),
+                    "branch": branch,
+                })
+
+    specs.sort(key=lambda s: s["name"])
+    return specs
+
+
+# ── Ensure branch exists ─────────────────────────────────────────────────────
+
+async def ensure_ai_tests_branch() -> str:
+    """Create the AI tests branch if it doesn't exist. Returns the branch name."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        await _ensure_branch(client, AI_TESTS_BRANCH)
+    return AI_TESTS_BRANCH
+
+
+# ── Commit spec file to AI tests branch ──────────────────────────────────────
+
+async def commit_spec_to_ai_branch(
+    spec_filename: str,
+    script_code: str,
+) -> str:
+    """Commit a spec file to the AI tests branch. Returns commit SHA."""
+    file_repo_path = f"skye-e2e-tests/tests/generated/{spec_filename}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        await _ensure_branch(client, AI_TESTS_BRANCH)
+        sha = await _commit_file(
+            client,
+            branch=AI_TESTS_BRANCH,
+            file_path=file_repo_path,
+            content=script_code,
+            message=f"feat: add AI-generated test {spec_filename}",
+        )
+    return sha
+
+
+# ── Run an existing spec file from a branch via GitHub Actions ────────────────
+
+async def run_existing_spec_via_gha(
+    run_id: str,
+    spec_file_path: str,   # e.g. "skye-e2e-tests/tests/generated/RB001_Pets.spec.ts"
+    branch: str,
+    browser: str,
+    environment: str,
+    device: str,
+    execution_mode: str,
+) -> tuple[int, str]:
+    """
+    Trigger GitHub Actions for an existing spec file on a branch.
+    Unlike run_test_via_github_actions, this does NOT commit the file first —
+    it assumes the file already exists on the branch.
+    Returns (exit_code, github_run_url).
+    """
+    r = aioredis.from_url(settings.REDIS_URL)
+    channel = f"run:{run_id}:logs"
+    history_key = f"run:{run_id}:log_history"
+
+    async def pub(msg: str) -> None:
+        await r.publish(channel, msg)
+        await r.rpush(history_key, msg)
+        await r.expire(history_key, 86400)
+
+    await asyncio.sleep(2)
+
+    spec_filename = spec_file_path.split("/")[-1]
+    mode_emoji = "🖥️" if execution_mode == "headed" else "👻"
+    await pub(f"▶ Starting GitHub Actions run [{run_id}]")
+    await pub(f"  Repo    : {_repo()}")
+    await pub(f"  File    : {spec_file_path}")
+    await pub(f"  Branch  : {branch}")
+    await pub(f"  Env     : {environment.upper()} | {browser} | {device}")
+    await pub(f"  Mode    : {mode_emoji} {execution_mode.upper()}")
+    await pub("─" * 60)
+
+    github_run_url: str = ""
+    exit_code = 1
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Verify the file exists on the branch
+            existing_sha = await _get_file_sha(client, branch, spec_file_path)
+            if not existing_sha:
+                await pub(f"❌ File not found: {spec_file_path} on branch '{branch}'")
+                await pub("__DONE__")
+                await r.aclose()
+                return 1, ""
+
+            await pub(f"✓ File verified on branch '{branch}'")
+
+            # Discover workflow
+            await pub("🔍 Discovering Playwright workflow…")
+            workflow_id, workflow_name = await _discover_workflow(client)
+            await pub(f"✓ Using workflow: '{workflow_name}' (id={workflow_id})")
+
+            # Trigger workflow_dispatch on main (uses fixed YAML)
+            triggered_at = time.time()
+            inputs = {
+                "test_file":      spec_file_path,
+                "browser":        browser,
+                "environment":    environment,
+                "execution_mode": execution_mode,
+                "device":         device,
+            }
+            TRIGGER_BRANCH = "main"
+            logger.info("run_existing_spec_via_gha: execution_mode=%r, device=%r, inputs=%s", execution_mode, device, inputs)
+            await pub(f"🚀 Triggering workflow on '{TRIGGER_BRANCH}' | mode={execution_mode} | device={device}…")
+            await _trigger_workflow(client, workflow_id, TRIGGER_BRANCH, inputs)
+            await pub("✓ Workflow triggered — polling for completion…")
+
+            conclusion, github_run_url = await _wait_for_run(
+                client, workflow_id, TRIGGER_BRANCH, triggered_at, pub
+            )
+            exit_code = 0 if conclusion == "success" else 1
+
+    except Exception as exc:
+        logger.exception("GitHub Actions runner error")
+        await pub(f"❌ Error: {exc}")
+        exit_code = 1
+
+    await pub("__DONE__")
+    await r.aclose()
+
+    return exit_code, github_run_url

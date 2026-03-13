@@ -1,39 +1,64 @@
 /**
- * Dashboard Tab
- * =============
- * - Pass/Fail pie chart from execution history
- * - Latest runs table with Allure links
- * - Script library with validation badge
- * - Allure report embed (iframe) for the latest passed run
+ * Dashboard Tab — Restyled with deep navy theme
  */
 import { useState } from 'react';
 import {
   Card, Table, Tag, Space, Badge, Typography,
-  Statistic, Row, Col, Button, Tabs, Empty,
+  Statistic, Row, Col, Button, Empty, Popconfirm, message,
 } from 'antd';
 import {
   CheckCircleFilled, CloseCircleFilled, ClockCircleFilled,
   BarChartOutlined, FileTextOutlined, LinkOutlined,
+  RocketOutlined, TrophyOutlined, BugOutlined, CodeOutlined,
+  DeleteOutlined, StopOutlined,
 } from '@ant-design/icons';
 import {
   PieChart, Pie, Cell, Tooltip as RTooltip, Legend, ResponsiveContainer,
 } from 'recharts';
-import { useQuery } from '@tanstack/react-query';
-import { fetchRuns, fetchScripts } from '../api/client';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { fetchRuns, fetchScripts, deleteRun, cancelRun } from '../api/client';
 import type { ExecutionRun, GeneratedScript } from '../types';
+import { colors, STATUS_COLORS } from '../theme';
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
-const STATUS_COLOR: Record<string, string> = {
-  passed:  '#52c41a',
-  failed:  '#ff4d4f',
-  running: '#1677ff',
-  queued:  '#faad14',
-  error:   '#ff7875',
-};
+const STAT_ICONS = [
+  <RocketOutlined style={{ fontSize: 22, color: colors.info }} />,
+  <TrophyOutlined style={{ fontSize: 22, color: colors.success }} />,
+  <BugOutlined style={{ fontSize: 22, color: colors.danger }} />,
+  <CodeOutlined style={{ fontSize: 22, color: colors.violet }} />,
+];
+const STAT_CLASSES = ['stat-blue', 'stat-green', 'stat-red', 'stat-purple'];
 
 export default function Dashboard() {
   const [allureRunId, setAllureRunId] = useState('');
+  const queryClient = useQueryClient();
+
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteRun(id);
+      message.success('Run deleted');
+      queryClient.invalidateQueries({ queryKey: ['runs'] });
+    } catch {
+      message.error('Failed to delete run');
+    }
+  };
+
+  const handleCancel = async (id: string) => {
+    try {
+      await cancelRun(id);
+      message.success('Run cancelled');
+    } catch (err: any) {
+      // 400 means the run already finished — just refresh the list silently
+      if (err?.response?.status === 400) {
+        message.info('Run already completed');
+      } else {
+        message.error('Failed to cancel run');
+      }
+    } finally {
+      queryClient.invalidateQueries({ queryKey: ['runs'] });
+    }
+  };
 
   const { data: runs = [] } = useQuery<ExecutionRun[]>({
     queryKey: ['runs'],
@@ -47,55 +72,71 @@ export default function Dashboard() {
     refetchInterval: 15_000,
   });
 
-  // ── Stats ───────────────────────────────────────────────────────────────────
   const passed  = runs.filter((r) => r.status === 'passed').length;
   const failed  = runs.filter((r) => r.status === 'failed').length;
   const running = runs.filter((r) => r.status === 'running').length;
   const total   = runs.length;
 
   const pieData = [
-    { name: 'Passed',  value: passed,  color: '#52c41a' },
-    { name: 'Failed',  value: failed,  color: '#ff4d4f' },
-    { name: 'Running', value: running, color: '#1677ff' },
+    { name: 'Passed',  value: passed,  color: colors.success },
+    { name: 'Failed',  value: failed,  color: colors.danger },
+    { name: 'Running', value: running, color: colors.running },
   ].filter((d) => d.value > 0);
 
-  // ── Run table columns ────────────────────────────────────────────────────────
   const runColumns = [
     {
-      title: 'Status', width: 100,
+      title: 'Status', width: 110,
       render: (_: unknown, r: ExecutionRun) => (
-        <Tag color={STATUS_COLOR[r.status]} icon={
-          r.status === 'passed'  ? <CheckCircleFilled /> :
-          r.status === 'failed'  ? <CloseCircleFilled /> :
-          <ClockCircleFilled />
-        }>
+        <Tag
+          color={STATUS_COLORS[r.status]}
+          icon={
+            r.status === 'passed'  ? <CheckCircleFilled /> :
+            r.status === 'failed'  ? <CloseCircleFilled /> :
+            <ClockCircleFilled />
+          }
+          style={{ borderRadius: 4, fontWeight: 600 }}
+        >
           {r.status.toUpperCase()}
         </Tag>
       ),
     },
-    { title: 'Env',    dataIndex: 'environment', width: 60 },
-    { title: 'Browser',dataIndex: 'browser',     width: 90 },
-    { title: 'Device', dataIndex: 'device',       ellipsis: true },
+    { title: 'Env', dataIndex: 'environment', width: 60,
+      render: (v: string) => <Tag color="blue" style={{ borderRadius: 4 }}>{v}</Tag>,
+    },
+    { title: 'Browser', dataIndex: 'browser', width: 90 },
+    { title: 'Device', dataIndex: 'device', ellipsis: true },
     {
-      title: 'Mode', dataIndex: 'execution_mode', width: 90,
-      render: (v: string) => <Tag>{v}</Tag>,
+      title: 'Mode', dataIndex: 'execution_mode', width: 100,
+      render: (v: string) => (
+        <Tag color={v === 'headed' ? 'purple' : 'default'} style={{ borderRadius: 4 }}>
+          {v === 'headed' ? '🖥️' : '👻'} {v}
+        </Tag>
+      ),
     },
     {
-      title: 'Tags', width: 180,
+      title: 'Tags', width: 160,
       render: (_: unknown, r: ExecutionRun) =>
-        r.tags?.map((t) => <Tag key={t} color="purple">@{t}</Tag>),
+        r.tags?.map((t) => (
+          <Tag key={t} style={{ background: '#8b5cf622', color: colors.violet, border: 'none', borderRadius: 4 }}>
+            @{t}
+          </Tag>
+        )),
     },
     {
       title: 'Started', width: 130,
       render: (_: unknown, r: ExecutionRun) =>
-        r.start_time ? new Date(r.start_time).toLocaleString() : '—',
+        r.start_time ? (
+          <Text style={{ fontSize: 11, color: colors.textSecondary }}>
+            {new Date(r.start_time).toLocaleString()}
+          </Text>
+        ) : '—',
     },
     {
       title: 'Duration', width: 90,
       render: (_: unknown, r: ExecutionRun) => {
         if (!r.start_time || !r.end_time) return '—';
         const ms = new Date(r.end_time).getTime() - new Date(r.start_time).getTime();
-        return `${(ms / 1000).toFixed(1)}s`;
+        return <Text style={{ color: colors.textSecondary, fontSize: 12 }}>{(ms / 1000).toFixed(1)}s</Text>;
       },
     },
     {
@@ -106,100 +147,152 @@ export default function Dashboard() {
             <Button
               size="small"
               icon={<LinkOutlined />}
-              href={`http://localhost:8000/api/reports/${r.id}`}
+              href={r.allure_report_path}
               target="_blank"
+              style={{ borderColor: colors.primary, color: colors.primaryLight }}
             >
               Open
             </Button>
+          </Space>
+        ) : <Text style={{ color: colors.textMuted }}>—</Text>,
+    },
+    {
+      title: 'Actions', width: 100, fixed: 'right' as const,
+      render: (_: unknown, r: ExecutionRun) => (
+        <Space size={4}>
+          {(r.status === 'queued' || r.status === 'running') && (
+            <Popconfirm
+              title="Cancel this run?"
+              okText="Yes"
+              cancelText="No"
+              onConfirm={() => handleCancel(r.id)}
+            >
+              <Button
+                size="small"
+                icon={<StopOutlined />}
+                style={{ borderColor: '#f97316', color: '#f97316' }}
+                title="Stop run"
+              />
+            </Popconfirm>
+          )}
+          <Popconfirm
+            title="Delete this run record?"
+            okText="Delete"
+            okButtonProps={{ danger: true }}
+            cancelText="Cancel"
+            onConfirm={() => handleDelete(r.id)}
+          >
             <Button
               size="small"
-              onClick={() => setAllureRunId(r.id)}
-            >
-              Embed
-            </Button>
-          </Space>
-        ) : '—',
+              icon={<DeleteOutlined />}
+              danger
+              title="Delete run"
+            />
+          </Popconfirm>
+        </Space>
+      ),
     },
   ];
 
-  // ── Script table columns ─────────────────────────────────────────────────────
   const scriptColumns = [
     {
       title: 'File', dataIndex: 'file_path', ellipsis: true,
-      render: (v: string) => v?.split('/').pop() ?? '—',
+      render: (v: string) => (
+        <Text style={{ fontSize: 12, color: colors.textPrimary }}>
+          {v?.split('/').pop() ?? '—'}
+        </Text>
+      ),
     },
     {
       title: 'Validation', dataIndex: 'validation_status', width: 110,
       render: (v: string) => (
         <Badge
           status={v === 'valid' ? 'success' : v === 'invalid' ? 'error' : 'default'}
-          text={v}
+          text={<span style={{ color: v === 'valid' ? colors.success : v === 'invalid' ? colors.danger : colors.textMuted }}>{v}</span>}
         />
       ),
     },
     {
       title: 'Created', width: 130,
-      render: (_: unknown, s: GeneratedScript) =>
-        new Date(s.created_at).toLocaleString(),
+      render: (_: unknown, s: GeneratedScript) => (
+        <Text style={{ fontSize: 11, color: colors.textSecondary }}>
+          {new Date(s.created_at).toLocaleString()}
+        </Text>
+      ),
     },
   ];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-      {/* ── Stats row ─────────────────────────────────────────────────────────── */}
+      {/* Stats row */}
       <Row gutter={16}>
         {[
-          { title: 'Total Runs',      value: total,   color: '#1677ff' },
-          { title: 'Passed',          value: passed,  color: '#52c41a' },
-          { title: 'Failed',          value: failed,  color: '#ff4d4f' },
-          { title: 'Scripts Generated', value: scripts.length, color: '#722ed1' },
-        ].map(({ title, value, color }) => (
+          { title: 'Total Runs',        value: total,          color: colors.info },
+          { title: 'Passed',            value: passed,         color: colors.success },
+          { title: 'Failed',            value: failed,         color: colors.danger },
+          { title: 'Scripts Generated', value: scripts.length, color: colors.violet },
+        ].map(({ title, value, color }, i) => (
           <Col span={6} key={title}>
-            <Card size="small">
-              <Statistic
-                title={title}
-                value={value}
-                valueStyle={{ color, fontSize: 28 }}
-              />
+            <Card size="small" className={`stat-card ${STAT_CLASSES[i]}`} style={{ background: colors.bgCard, border: `1px solid ${colors.border}` }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{
+                  width: 44, height: 44,
+                  borderRadius: 10,
+                  background: `${color}15`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}>
+                  {STAT_ICONS[i]}
+                </div>
+                <Statistic
+                  title={<span style={{ color: colors.textMuted, fontSize: 12 }}>{title}</span>}
+                  value={value}
+                  valueStyle={{ color, fontSize: 30, fontWeight: 700 }}
+                />
+              </div>
             </Card>
           </Col>
         ))}
       </Row>
 
-      {/* ── Chart + runs table ──────────────────────────────────────────────── */}
+      {/* Chart + Scripts */}
       <Row gutter={16}>
         <Col span={7}>
           <Card
             size="small"
-            title={<><BarChartOutlined /> Pass / Fail Distribution</>}
-            style={{ height: 280 }}
+            className="glow-card section-card"
+            title={<Space><BarChartOutlined style={{ color: colors.primaryLight }} /> <span>Pass / Fail</span></Space>}
+            style={{ height: 300, background: colors.bgCard, border: `1px solid ${colors.border}` }}
           >
             {pieData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={220}>
+              <ResponsiveContainer width="100%" height={230}>
                 <PieChart>
                   <Pie
                     data={pieData}
                     cx="50%"
                     cy="50%"
                     innerRadius={55}
-                    outerRadius={85}
+                    outerRadius={88}
                     paddingAngle={3}
                     dataKey="value"
-                    label={({ name, percent }) =>
-                      `${name} ${(percent * 100).toFixed(0)}%`
-                    }
+                    stroke="none"
+                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                   >
                     {pieData.map((entry, i) => (
                       <Cell key={i} fill={entry.color} />
                     ))}
                   </Pie>
-                  <RTooltip />
-                  <Legend />
+                  <RTooltip
+                    contentStyle={{ background: colors.bgCard, border: `1px solid ${colors.border}`, borderRadius: 8 }}
+                    itemStyle={{ color: colors.textPrimary }}
+                  />
+                  <Legend wrapperStyle={{ color: colors.textSecondary, fontSize: 12 }} />
                 </PieChart>
               </ResponsiveContainer>
             ) : (
-              <Empty description="No runs yet" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              <Empty description={<span style={{ color: colors.textMuted }}>No runs yet</span>} image={Empty.PRESENTED_IMAGE_SIMPLE} />
             )}
           </Card>
         </Col>
@@ -207,8 +300,9 @@ export default function Dashboard() {
         <Col span={17}>
           <Card
             size="small"
-            title={<><FileTextOutlined /> Script Library</>}
-            style={{ height: 280 }}
+            className="glow-card section-card"
+            title={<Space><FileTextOutlined style={{ color: colors.primaryLight }} /> <span>Script Library</span></Space>}
+            style={{ height: 300, background: colors.bgCard, border: `1px solid ${colors.border}` }}
           >
             <Table
               dataSource={scripts}
@@ -216,36 +310,42 @@ export default function Dashboard() {
               rowKey="id"
               size="small"
               pagination={{ pageSize: 5, size: 'small' }}
-              scroll={{ y: 170 }}
+              scroll={{ y: 180 }}
             />
           </Card>
         </Col>
       </Row>
 
-      {/* ── Execution history ─────────────────────────────────────────────────── */}
-      <Card size="small" title="Execution History">
+      {/* Execution History */}
+      <Card
+        size="small"
+        className="glow-card section-card"
+        title={<Space><ClockCircleFilled style={{ color: colors.primaryLight }} /> <span>Execution History</span></Space>}
+        style={{ background: colors.bgCard, border: `1px solid ${colors.border}` }}
+      >
         <Table
           dataSource={runs}
           columns={runColumns}
           rowKey="id"
           size="small"
           pagination={{ pageSize: 8, size: 'small' }}
-          scroll={{ x: 1100 }}
+          scroll={{ x: 1300 }}
+          rowClassName={(r: ExecutionRun) => `status-row-${r.status}`}
         />
       </Card>
 
-      {/* ── Allure report embed ─────────────────────────────────────────────── */}
+      {/* Allure embed */}
       {allureRunId && (
         <Card
           size="small"
+          className="glow-card"
           title="Allure Report"
-          extra={
-            <Button size="small" onClick={() => setAllureRunId('')}>Close</Button>
-          }
+          extra={<Button size="small" onClick={() => setAllureRunId('')}>Close</Button>}
+          style={{ background: colors.bgCard, border: `1px solid ${colors.border}` }}
         >
           <iframe
             src={`http://localhost:8000/api/reports/${allureRunId}`}
-            style={{ width: '100%', height: 600, border: 'none' }}
+            style={{ width: '100%', height: 600, border: 'none', borderRadius: 6 }}
             title="Allure Report"
           />
         </Card>
