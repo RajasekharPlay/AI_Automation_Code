@@ -9,7 +9,12 @@
       "Bash(git push:*)",
       "Bash(powershell.exe -Command \"Select-String -Path ''skye-e2e-tests/tests/generated/RB001_RB_Pets__Landing_Page.spec.ts'' -Pattern ''goto''\")",
       "Bash(powershell.exe -Command \"Get-Command psql -ErrorAction SilentlyContinue; Get-Command pg_isready -ErrorAction SilentlyContinue; where.exe psql 2>nul\")",
-      "Bash(venv/Scripts/uvicorn.exe main:app --host 127.0.0.1 --port 8000)"
+      "Bash(venv/Scripts/uvicorn.exe main:app --host 127.0.0.1 --port 8000)",
+      "Bash(sc query:*)",
+      "Bash(powershell.exe -Command \"Start-Sleep -Seconds 5; Invoke-RestMethod -Uri ''http://127.0.0.1:8000/health''\")",
+      "Bash(powershell.exe -Command \"Get-Process -Name node -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 2; Get-NetTCPConnection -LocalPort 5174 -ErrorAction SilentlyContinue\")",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 5174 -State Listen -ErrorAction SilentlyContinue | Select-Object LocalPort, State, OwningProcess\")"
     ]
   }
 }

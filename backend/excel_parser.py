@@ -40,16 +40,49 @@ class ParsedTestCase(BaseModel):
 
 # Maps possible header variations (after stripping + lower) to canonical keys
 COLUMN_MAP = {
+    # ID / Script number variants
     "test script num": "test_script_num",
     "test script number": "test_script_num",
-    "module": "module",
+    "test case id": "test_script_num",
+    "test case num": "test_script_num",
+    "test id": "test_script_num",
+    "id": "test_script_num",
+    "tc id": "test_script_num",
+    "sr no": "test_script_num",
+    "sr. no": "test_script_num",
+    "s.no": "test_script_num",
+    "no": "test_script_num",
+    # Name / Title variants
     "test case": "test_case_name",
     "test case name": "test_case_name",
+    "title": "test_case_name",
+    "name": "test_case_name",
+    "test name": "test_case_name",
+    "scenario": "test_case_name",
+    "test scenario": "test_case_name",
+    # Module variants
+    "module": "module",
+    "feature": "module",
+    "category": "module",
+    # Description / Precondition variants
     "description": "description",
+    "precondition": "description",
+    "pre-condition": "description",
+    "pre condition": "description",
+    "objective": "description",
+    # Steps variants
     "step": "steps",
     "steps": "steps",
+    "test steps": "steps",
+    "test step": "steps",
+    "action": "steps",
+    "actions": "steps",
+    # Expected result variants
     "expected results": "expected_results",
     "expected result": "expected_results",
+    "expected": "expected_results",
+    "expected output": "expected_results",
+    "expected behavior": "expected_results",
 }
 
 
@@ -122,12 +155,14 @@ def parse_excel(source: Union[str, Path, bytes, io.BytesIO]) -> list[ParsedTestC
         if canonical:
             col_index[canonical] = idx
 
-    required = {"test_script_num", "test_case_name", "steps"}
+    # Only 'steps' is truly required; id and name can be auto-generated
+    required = {"steps"}
     missing = required - set(col_index.keys())
     if missing:
         raise ValueError(
             f"Excel is missing required columns: {missing}. "
-            f"Found headers: {raw_headers}"
+            f"Found headers: {raw_headers}. "
+            f"Expected a column like 'Steps', 'Test Steps', or 'Action'."
         )
 
     # ── File name for audit ───────────────────────────────────────────────────────
@@ -143,17 +178,27 @@ def parse_excel(source: Union[str, Path, bytes, io.BytesIO]) -> list[ParsedTestC
             val = row[idx]
             return str(val).strip() if val is not None else default
 
+        raw_steps_text = _cell("steps")
+        # Skip rows that have no steps content at all
+        if not raw_steps_text or raw_steps_text.lower() in ("none", ""):
+            continue
+
+        # Auto-generate test_script_num if column not present
         test_script_num = _cell("test_script_num")
         if not test_script_num or test_script_num.lower() in ("none", ""):
-            continue  # skip empty rows
+            test_script_num = f"TC{len(test_cases) + 1:03d}"
 
-        raw_steps_text = _cell("steps")
+        # Auto-generate test_case_name from description or steps if missing
+        test_case_name = _cell("test_case_name")
+        if not test_case_name or test_case_name.lower() in ("none", ""):
+            test_case_name = _cell("description") or raw_steps_text[:80].split("\n")[0]
+
         steps = _parse_steps(raw_steps_text)
 
         tc = ParsedTestCase(
             test_script_num=test_script_num,
-            module=_clean_module(_cell("module", "UnknownModule")),
-            test_case_name=_cell("test_case_name"),
+            module=_clean_module(_cell("module", "General")),
+            test_case_name=test_case_name,
             description=_cell("description"),
             steps=steps,
             raw_steps=raw_steps_text,

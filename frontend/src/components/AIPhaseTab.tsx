@@ -14,6 +14,7 @@ import {
 import Editor from '@monaco-editor/react';
 import toast from 'react-hot-toast';
 import { uploadExcel, createScriptStream, refreshFramework, fetchLLMProvider } from '../api/client';
+import { useProjectContext } from '../context/ProjectContext';
 import type { TestCase } from '../types';
 import { colors, gradients } from '../theme';
 
@@ -38,6 +39,7 @@ interface BatchResult {
 }
 
 export default function AIPhaseTab() {
+  const { selectedProjectId, selectedProject } = useProjectContext();
   const [testCases, setTestCases]           = useState<TestCase[]>([]);
   const [selectedTcIds, setSelectedTcIds]   = useState<React.Key[]>([]);
   const [instruction, setInstruction]       = useState('');
@@ -65,7 +67,7 @@ export default function AIPhaseTab() {
   const handleUpload = useCallback(async (file: File) => {
     setUploading(true);
     try {
-      const data = await uploadExcel(file);
+      const data = await uploadExcel(file, selectedProjectId ?? undefined);
       setTestCases(data.test_cases);
       toast.success(`Parsed ${data.test_cases.length} test cases from ${file.name}`);
     } catch (err: unknown) {
@@ -112,11 +114,12 @@ export default function AIPhaseTab() {
             });
           },
           provider,
+          selectedProjectId ?? '',
         );
         stopCurrentRef.current = stop;
       });
     },
-    [testCases, instruction, provider],
+    [testCases, instruction, provider, selectedProjectId],
   );
 
   const handleGenerate = async () => {
@@ -219,6 +222,26 @@ export default function AIPhaseTab() {
 
       {/* LEFT PANEL */}
       <div style={{ width: 520, display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
+
+        {/* Active project indicator */}
+        {selectedProject && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '6px 12px',
+            background: `${selectedProject.icon_color}15`,
+            border: `1px solid ${selectedProject.icon_color}33`,
+            borderRadius: 8,
+            fontSize: 12,
+          }}>
+            <span style={{
+              width: 10, height: 10, borderRadius: '50%',
+              background: selectedProject.icon_color,
+              boxShadow: `0 0 6px ${selectedProject.icon_color}44`,
+            }} />
+            <Text style={{ color: colors.textPrimary, fontWeight: 600 }}>{selectedProject.name}</Text>
+            <Text style={{ color: colors.textMuted, fontSize: 11 }}>{selectedProject.github_repo}</Text>
+          </div>
+        )}
 
         {/* 1. LLM Provider */}
         <Card

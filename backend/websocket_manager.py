@@ -10,6 +10,7 @@ Pattern:
   - A background subscriber task forwards Redis messages → WebSocket clients
 """
 import asyncio
+import json
 import logging
 from collections import defaultdict
 from fastapi import WebSocket
@@ -116,6 +117,62 @@ async def redis_log_subscriber(run_id: str, manager: "WebSocketManager", redis_u
                 await manager.broadcast(run_id, data)
                 if data.strip() == "__DONE__":
                     break
+    finally:
+        await pubsub.unsubscribe(channel)
+        await r.aclose()
+
+
+async def redis_json_subscriber(session_id: str, manager: "WebSocketManager", redis_url: str) -> None:
+    """
+    Subscribe to Redis pub/sub channel for MCP events and forward JSON to WebSocket.
+    Same pattern as redis_log_subscriber but uses broadcast_json for structured events.
+    """
+    import redis.asyncio as aioredis
+
+    r = aioredis.from_url(redis_url)
+    channel = f"mcp:{session_id}:events"
+    history_key = f"mcp:{session_id}:event_history"
+    pubsub = r.pubsub()
+
+    await pubsub.subscribe(channel)
+
+    already_done = False
+    try:
+        history = await r.lrange(history_key, 0, -1)
+        for item in history:
+            if isinstance(item, bytes):
+                item = item.decode("utf-8")
+            try:
+                data = json.loads(item)
+                await manager.broadcast_json(session_id, data)
+            except (json.JSONDecodeError, Exception):
+                await manager.broadcast(session_id, item)
+            if '"type": "done"' in item:
+                already_done = True
+                break
+    except Exception as e:
+        logger.warning("MCP event history replay failed for %s: %s", session_id, e)
+
+    if already_done:
+        await pubsub.unsubscribe(channel)
+        await r.aclose()
+        return
+
+    try:
+        async for msg in pubsub.listen():
+            if msg["type"] == "message":
+                data = msg["data"]
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8")
+                try:
+                    parsed = json.loads(data)
+                    await manager.broadcast_json(session_id, parsed)
+                    if parsed.get("type") == "done":
+                        break
+                except json.JSONDecodeError:
+                    await manager.broadcast(session_id, data)
+                    if data.strip() == "__DONE__":
+                        break
     finally:
         await pubsub.unsubscribe(channel)
         await r.aclose()

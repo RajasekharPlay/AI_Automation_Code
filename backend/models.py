@@ -1,12 +1,11 @@
 """
 SQLAlchemy ORM models — PostgreSQL.
-Columns match the Pet_LandingPage.xlsx schema exactly.
 """
 import uuid
 from datetime import datetime
 from typing import Optional
 from sqlalchemy import (
-    String, Text, Integer, DateTime, ForeignKey,
+    String, Text, Integer, DateTime, ForeignKey, Boolean,
     Enum as SAEnum, ARRAY, JSON
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -29,12 +28,61 @@ class ExecutionStatus(str, enum.Enum):
     error = "error"
 
 
+# ── Projects ──────────────────────────────────────────────────────────────────
+class Project(Base):
+    __tablename__ = "projects"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    icon_color: Mapped[str] = mapped_column(String(7), default="#6366f1")
+
+    # GitHub config
+    github_repo: Mapped[str] = mapped_column(String(300), nullable=False)      # "owner/repo"
+    github_token: Mapped[Optional[str]] = mapped_column(String(500))           # per-project; fallback to global
+    ai_tests_branch: Mapped[str] = mapped_column(String(200), default="ai-playwright-tests")
+    workflow_path: Mapped[Optional[str]] = mapped_column(String(500))          # e.g. ".github/workflows/mga-tests.yml"
+
+    # Playwright config
+    playwright_project_path: Mapped[Optional[str]] = mapped_column(String(500))  # local path on disk
+    generated_tests_dir: Mapped[str] = mapped_column(String(200), default="tests/generated")
+    runner_label: Mapped[str] = mapped_column(String(100), default="self-hosted")
+
+    # Environment credentials
+    pw_host: Mapped[Optional[str]] = mapped_column(String(500))
+    pw_testuser: Mapped[Optional[str]] = mapped_column(String(200))
+    pw_password: Mapped[Optional[str]] = mapped_column(String(200))
+    pw_email: Mapped[Optional[str]] = mapped_column(String(300))
+
+    # Framework context config
+    framework_fetch_paths: Mapped[Optional[list]] = mapped_column(JSON)   # paths to fetch from repo
+    system_prompt_override: Mapped[Optional[str]] = mapped_column(Text)   # per-project LLM instructions
+
+    # Optional integrations
+    jira_url: Mapped[Optional[str]] = mapped_column(String(500))
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
+
+    # Relationships
+    test_cases: Mapped[list["TestCase"]] = relationship(back_populates="project")
+    scripts: Mapped[list["GeneratedScript"]] = relationship(back_populates="project")
+    runs: Mapped[list["ExecutionRun"]] = relationship(back_populates="project")
+
+
 # ── Test Cases ──────────────────────────────────────────────────────────────────
 class TestCase(Base):
     __tablename__ = "test_cases"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True, index=True
     )
     # Direct mapping from Excel columns
     test_script_num: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
@@ -47,6 +95,7 @@ class TestCase(Base):
     excel_source: Mapped[Optional[str]] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    project: Mapped[Optional["Project"]] = relationship(back_populates="test_cases")
     scripts: Mapped[list["GeneratedScript"]] = relationship(back_populates="test_case")
 
 
@@ -56,6 +105,9 @@ class GeneratedScript(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True, index=True
     )
     test_case_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("test_cases.id"), nullable=False
@@ -71,6 +123,7 @@ class GeneratedScript(Base):
     validation_errors: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    project: Mapped[Optional["Project"]] = relationship(back_populates="scripts")
     test_case: Mapped["TestCase"] = relationship(back_populates="scripts")
     runs: Mapped[list["ExecutionRun"]] = relationship(back_populates="script")
     prompts: Mapped[list["UserPrompt"]] = relationship(back_populates="script")
@@ -83,6 +136,9 @@ class ExecutionRun(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True, index=True
+    )
     script_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("generated_scripts.id"), nullable=True
     )
@@ -93,6 +149,7 @@ class ExecutionRun(Base):
     browser: Mapped[str] = mapped_column(String(20), nullable=False)          # chromium/firefox/webkit
     device: Mapped[str] = mapped_column(String(80), nullable=False)           # Desktop Chrome / iPhone 13 …
     execution_mode: Mapped[str] = mapped_column(String(10), nullable=False)   # headless/headed
+    run_target: Mapped[str] = mapped_column(String(20), default="github_actions")  # local/github_actions
     browser_version: Mapped[str] = mapped_column(String(30), default="stable")
     tags: Mapped[Optional[list]] = mapped_column(ARRAY(String))               # regression/smoke …
 
@@ -105,7 +162,47 @@ class ExecutionRun(Base):
     allure_report_path: Mapped[Optional[str]] = mapped_column(String(500))
     exit_code: Mapped[Optional[int]] = mapped_column(Integer)
 
+    project: Mapped[Optional["Project"]] = relationship(back_populates="runs")
     script: Mapped[Optional["GeneratedScript"]] = relationship(back_populates="runs")
+
+
+# ── MCP Browser Sessions ─────────────────────────────────────────────────────────
+class MCPSessionStatus(str, enum.Enum):
+    active = "active"
+    paused = "paused"
+    completed = "completed"
+    error = "error"
+
+
+class MCPBrowserSession(Base):
+    __tablename__ = "mcp_browser_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True, index=True
+    )
+    test_case_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("test_cases.id"), nullable=True
+    )
+    start_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    browser: Mapped[str] = mapped_column(String(20), default="chromium")
+    headless: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[MCPSessionStatus] = mapped_column(
+        SAEnum(MCPSessionStatus), default=MCPSessionStatus.active
+    )
+    steps: Mapped[Optional[dict]] = mapped_column(JSON)  # array of action steps
+    generated_script_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("generated_scripts.id"), nullable=True
+    )
+    total_steps: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+    project: Mapped[Optional["Project"]] = relationship()
+    test_case: Mapped[Optional["TestCase"]] = relationship()
+    generated_script: Mapped[Optional["GeneratedScript"]] = relationship()
 
 
 # ── Prompt Audit ─────────────────────────────────────────────────────────────────

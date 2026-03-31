@@ -10,27 +10,30 @@ import {
   CheckCircleFilled, CloseCircleFilled, ClockCircleFilled,
   BarChartOutlined, FileTextOutlined, LinkOutlined,
   RocketOutlined, TrophyOutlined, BugOutlined, CodeOutlined,
-  DeleteOutlined, StopOutlined,
+  DeleteOutlined, StopOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import {
   PieChart, Pie, Cell, Tooltip as RTooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchRuns, fetchScripts, deleteRun, cancelRun } from '../api/client';
+import { fetchRuns, fetchScripts, deleteRun, cancelRun, clearAllRuns, clearAllData } from '../api/client';
+import { useProjectContext } from '../context/ProjectContext';
 import type { ExecutionRun, GeneratedScript } from '../types';
 import { colors, STATUS_COLORS } from '../theme';
 
 const { Text } = Typography;
 
+// Order: Scripts Generated, Total Runs, Passed, Failed
 const STAT_ICONS = [
-  <RocketOutlined style={{ fontSize: 22, color: colors.info }} />,
+  <CodeOutlined   style={{ fontSize: 22, color: colors.violet  }} />,
+  <RocketOutlined style={{ fontSize: 22, color: colors.info    }} />,
   <TrophyOutlined style={{ fontSize: 22, color: colors.success }} />,
-  <BugOutlined style={{ fontSize: 22, color: colors.danger }} />,
-  <CodeOutlined style={{ fontSize: 22, color: colors.violet }} />,
+  <BugOutlined    style={{ fontSize: 22, color: colors.danger  }} />,
 ];
-const STAT_CLASSES = ['stat-blue', 'stat-green', 'stat-red', 'stat-purple'];
+const STAT_CLASSES = ['stat-purple', 'stat-blue', 'stat-green', 'stat-red'];
 
 export default function Dashboard() {
+  const { selectedProjectId } = useProjectContext();
   const [allureRunId, setAllureRunId] = useState('');
   const queryClient = useQueryClient();
 
@@ -60,17 +63,46 @@ export default function Dashboard() {
     }
   };
 
-  const { data: runs = [] } = useQuery<ExecutionRun[]>({
-    queryKey: ['runs'],
-    queryFn:  fetchRuns,
-    refetchInterval: 15_000,
+  const { data: runs = [], refetch: refetchRuns, isFetching: fetchingRuns } = useQuery<ExecutionRun[]>({
+    queryKey: ['runs', selectedProjectId],
+    queryFn:  () => fetchRuns(selectedProjectId ?? undefined),
+    refetchInterval: 5_000,
   });
 
-  const { data: scripts = [] } = useQuery<GeneratedScript[]>({
-    queryKey: ['scripts'],
-    queryFn:  fetchScripts,
-    refetchInterval: 15_000,
+  const { data: scripts = [], refetch: refetchScripts, isFetching: fetchingScripts } = useQuery<GeneratedScript[]>({
+    queryKey: ['scripts', selectedProjectId],
+    queryFn:  () => fetchScripts(selectedProjectId ?? undefined),
+    refetchInterval: 10_000,
   });
+
+  const handleRefresh = () => { refetchRuns(); refetchScripts(); };
+
+  const handleClearAll = async () => {
+    try {
+      const res = await clearAllRuns();
+      message.success(`Cleared ${res.deleted} run${res.deleted !== 1 ? 's' : ''}`);
+      queryClient.invalidateQueries({ queryKey: ['runs'] });
+    } catch {
+      message.error('Failed to clear runs');
+    }
+  };
+
+  const [clearing, setClearing] = useState(false);
+  const handleResetAll = async () => {
+    setClearing(true);
+    try {
+      const res = await clearAllData();
+      message.success(
+        `Reset complete — removed ${res.deleted_scripts} scripts, ${res.deleted_test_cases} test cases, ${res.deleted_runs} runs`
+      );
+      queryClient.invalidateQueries({ queryKey: ['runs'] });
+      queryClient.invalidateQueries({ queryKey: ['scripts'] });
+    } catch {
+      message.error('Failed to reset data');
+    } finally {
+      setClearing(false);
+    }
+  };
 
   const passed  = runs.filter((r) => r.status === 'passed').length;
   const failed  = runs.filter((r) => r.status === 'failed').length;
@@ -99,6 +131,24 @@ export default function Dashboard() {
           {r.status.toUpperCase()}
         </Tag>
       ),
+    },
+    {
+      title: 'Target', width: 80,
+      render: (_: unknown, r: ExecutionRun) => {
+        const isLocal = r.run_target === 'local';
+        return (
+          <Tag style={{
+            background: isLocal ? '#0ea5e915' : '#f59e0b15',
+            color: isLocal ? '#38bdf8' : '#fbbf24',
+            border: 'none',
+            borderRadius: 4,
+            fontSize: 10,
+            fontWeight: 600,
+          }}>
+            {isLocal ? '💻 Local' : '🔄 GHA'}
+          </Tag>
+        );
+      },
     },
     { title: 'Env', dataIndex: 'environment', width: 60,
       render: (v: string) => <Tag color="blue" style={{ borderRadius: 4 }}>{v}</Tag>,
@@ -225,13 +275,40 @@ export default function Dashboard() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
+      {/* Top action bar */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8 }}>
+        <Button
+          size="small" icon={<ReloadOutlined />}
+          loading={fetchingRuns || fetchingScripts}
+          onClick={handleRefresh}
+          style={{ color: colors.textMuted, borderColor: colors.border, background: colors.bgCard }}
+        >
+          Refresh
+        </Button>
+        <Popconfirm
+          title="Reset all application data?"
+          description="This permanently deletes ALL scripts, test cases, and execution history."
+          okText="Reset Everything"
+          okButtonProps={{ danger: true }}
+          cancelText="Cancel"
+          onConfirm={handleResetAll}
+        >
+          <Button
+            size="small" danger icon={<DeleteOutlined />}
+            loading={clearing}
+          >
+            Reset All Data
+          </Button>
+        </Popconfirm>
+      </div>
+
       {/* Stats row */}
       <Row gutter={16}>
         {[
+          { title: 'Scripts Generated', value: scripts.length, color: colors.violet },
           { title: 'Total Runs',        value: total,          color: colors.info },
           { title: 'Passed',            value: passed,         color: colors.success },
           { title: 'Failed',            value: failed,         color: colors.danger },
-          { title: 'Scripts Generated', value: scripts.length, color: colors.violet },
         ].map(({ title, value, color }, i) => (
           <Col span={6} key={title}>
             <Card size="small" className={`stat-card ${STAT_CLASSES[i]}`} style={{ background: colors.bgCard, border: `1px solid ${colors.border}` }}>
@@ -302,6 +379,20 @@ export default function Dashboard() {
             size="small"
             className="glow-card section-card"
             title={<Space><FileTextOutlined style={{ color: colors.primaryLight }} /> <span>Script Library</span></Space>}
+            extra={
+              <Popconfirm
+                title="Delete all scripts & test cases?"
+                description="This also removes all execution history."
+                okText="Delete All"
+                okButtonProps={{ danger: true }}
+                cancelText="Cancel"
+                onConfirm={handleResetAll}
+              >
+                <Button type="text" size="small" icon={<DeleteOutlined />}
+                  style={{ color: colors.danger }} title="Clear all scripts" loading={clearing}
+                />
+              </Popconfirm>
+            }
             style={{ height: 300, background: colors.bgCard, border: `1px solid ${colors.border}` }}
           >
             <Table
@@ -321,6 +412,31 @@ export default function Dashboard() {
         size="small"
         className="glow-card section-card"
         title={<Space><ClockCircleFilled style={{ color: colors.primaryLight }} /> <span>Execution History</span></Space>}
+        extra={
+          <Space size={6}>
+            <Button
+              type="text" size="small" icon={<ReloadOutlined />}
+              loading={fetchingRuns}
+              onClick={handleRefresh}
+              style={{ color: colors.textMuted }}
+              title="Refresh results"
+            />
+            <Popconfirm
+              title="Clear all runs?"
+              description="This will permanently delete all execution history from the database."
+              okText="Clear All"
+              okButtonProps={{ danger: true }}
+              cancelText="Cancel"
+              onConfirm={handleClearAll}
+            >
+              <Button
+                type="text" size="small" icon={<DeleteOutlined />}
+                style={{ color: colors.danger }}
+                title="Clear all runs"
+              />
+            </Popconfirm>
+          </Space>
+        }
         style={{ background: colors.bgCard, border: `1px solid ${colors.border}` }}
       >
         <Table

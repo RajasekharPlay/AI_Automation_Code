@@ -41,8 +41,18 @@ class Settings(BaseSettings):
     PLAYWRIGHT_PROJECT_PATH: str
     GENERATED_TESTS_DIR: str = "tests/generated"
 
+    # ── MGA (AI_Automation_MGA) local project ────────────────────────────────
+    # Full path to AI_Automation_MGA/skye-e2e-tests on this machine.
+    # Set to "" to disable MGA spec scanning.
+    MGA_PLAYWRIGHT_PROJECT_PATH: str = ""
+
     # ── AI Tests Branch ────────────────────────────────────────────────────
     AI_TESTS_BRANCH: str = "ai-playwright-tests"
+
+    # ── MCP (Playwright MCP Browser) ────────────────────────────────────────
+    MCP_NPX_PATH: str = "npx"
+    MCP_DEFAULT_VIEWPORT_WIDTH: int = 1280
+    MCP_DEFAULT_VIEWPORT_HEIGHT: int = 720
 
     # ── App ───────────────────────────────────────────────────────────────────
     FRONTEND_URL: str = "http://localhost:5174"

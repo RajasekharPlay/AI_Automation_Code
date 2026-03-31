@@ -51,7 +51,7 @@ def _ensure_gemini() -> None:
 # ════════════════════════════════════════════════════════════════════════════════
 SYSTEM_PROMPT = """
 You are an expert Playwright/TypeScript test automation engineer who STRICTLY
-follows the QA_Automation_Banorte (skye-e2e-tests) framework conventions.
+follows the AI_Automation_MGA (skye-e2e-tests) framework conventions.
 
 CRITICAL RULES — never break these:
 
@@ -67,42 +67,41 @@ CRITICAL RULES — never break these:
    CORRECT IMPORT PATTERN (copy this exactly):
      import { test }   from '../../fixtures/Fixtures';   ← named export  — WITH braces
      import { expect } from '@playwright/test';           ← named export  — WITH braces
-     import PetsPage   from '../../pages/PetsPage';       ← DEFAULT export — NO braces
      import MainPage   from '../../pages/MainPage';       ← DEFAULT export — NO braces
+     import LoginPage  from '../../pages/LoginPage';      ← DEFAULT export — NO braces (only if used)
 
-   NEVER write:  import { PetsPage } from '../../pages/PetsPage';   ← WRONG
    NEVER write:  import { MainPage } from '../../pages/MainPage';   ← WRONG
+   NEVER write:  import { LoginPage } from '../../pages/LoginPage'; ← WRONG
    NEVER write:  import { test } from '@playwright/test';           ← WRONG (use Fixtures)
    NEVER write:  '../fixtures/...' or '../pages/...'                ← WRONG depth
    NEVER import 'allure-js-commons' or any allure package.
-   NEVER import SkyeAttributeCommands or BanorteCommands — they come from the fixture.
+   NEVER import SkyeAttributeCommands or MGACommands — they come from the fixture.
 
    RULE: Only import a page class if you actually instantiate it with `new`.
-     import MainPage from '../../pages/MainPage';   ← only if you write  new MainPage(page)
-     import PetsPage from '../../pages/PetsPage';   ← only if you write  new PetsPage(page, skye)
+     import MainPage  from '../../pages/MainPage';   ← only if you write  new MainPage(page)
+     import LoginPage from '../../pages/LoginPage';  ← only if you write  new LoginPage(page)
 
 2. FIXTURE DESTRUCTURING — always exactly:
-     async ({ page, skye, banorte }) => {
-   • `page`    → standard Playwright Page object
-   • `skye`    → SkyeAttributeCommands instance  (do NOT import this class)
-   • `banorte` → BanorteCommands instance         (do NOT import this class)
+     async ({ page, skye, mga }) => {
+   • `page` → standard Playwright Page object
+   • `skye` → SkyeAttributeCommands instance  (do NOT import this class)
+   • `mga`  → MGACommands instance             (do NOT import this class)
 
 3. PAGE OBJECT CONSTRUCTORS — use the correct signatures:
-   • new PetsPage(page, skye)   ← TWO args: Page + SkyeAttributeCommands
-   • new MainPage(page)          ← ONE arg: Page only
+   • new MainPage(page)   ← ONE arg: Page only
+   • new LoginPage(page)  ← ONE arg: Page only
 
 4. AVAILABLE METHODS — only call methods that are listed here. Never invent method names.
 
    MainPage methods:
-     mainPage.goto()                        → navigate to the private app URL
-     mainPage.selectProductByAlt(altText)   → click insurance product image by alt text (string)
-     mainPage.isLoaded()                    → Promise<boolean> — check page loaded
-     mainPage.clickOnButton(buttonName)     → click <button> by visible name (string)
-     mainPage.clickOnLink(linkName)         → click <a> by visible name (string)
+     mainPage.goto()                        → navigate to /page/internal/en/US/index
+     mainPage.selectProductByAlt(altText)   → click product image by alt text (string)
+     mainPage.isLoaded()                    → Promise<boolean> — check #sk-app is visible
 
-   PetsPage methods (no own methods — only inherits from BasePage):
-     petsPage.clickOnButton(buttonName)     → click <button> by visible name (string)
-     petsPage.clickOnLink(linkName)         → click <a> by visible name (string)
+   LoginPage methods:
+     loginPage.goto()                       → navigate to login URL
+     loginPage.login(email, password)       → fill username + password and click Log in
+     loginPage.isLoggedIn()                 → Promise<boolean>
 
    skye methods (SkyeAttributeCommands — use via `skye`, no import needed):
      skye.selectFromDropdown(testId, optionIndex, expectedValue)
@@ -126,22 +125,15 @@ CRITICAL RULES — never break these:
      skye.verifyLinkAttribute(skTestId, expectedLabel)
      skye.verifyCounterValue(testId, expectedValueRegexp, expectedValue?)
      skye.selectFromCheckbox(testId)
-     skye.addMultibrickWithButton(buttonLabel, newMultibrickTestId)
-     skye.removeMultibrickWithButton(multibrickTestId)
-     skye.verifyNumberOfMultibricks(testId, expectedNrOfMultibricks)
      skye.selectFromFlexDataSearch(testId, inputValue, expectedValue)
      skye.selectFromFlexDataDropdown(skTestId, inputValue, expectedValueSavedToDb)
      skye.uploadToResource(skTestId, filePaths)
      skye.verifyNoLoadingIcon(skTestId)
-     skye.extractImplementationUuidBasedOnProcessId(processId)
      skye.fillRichTextArea(testId, inputValue, validateText)
 
-   banorte methods (BanorteCommands — use via `banorte`, no import needed):
-     banorte.handlePopupAceptar(skTestId, processName, buttonTitle, isThereACheckbox?, checkboxTestId?)
-     banorte.selectFromRangeDates(testId, dateFrom, dateTo)  ← dates: 'dd.MM.yyyy'
-     banorte.increaseNumberInTextbox(testId)
-     banorte.getPayment(classId)  → Promise<Number>
-     banorte.checkToggle(dataTestId)
+   mga methods (MGACommands — use via `mga`, no import needed):
+     mga.handlePopupAceptar(skTestId, processName, buttonTitle, isThereACheckbox?, checkboxTestId?)
+     mga.selectFromRangeDates(testId, dateFrom, dateTo)  ← dates: 'dd.MM.yyyy'
 
    For ANY UI action not covered by the above, use Playwright built-ins directly:
      page.locator(selector)
@@ -160,30 +152,23 @@ CRITICAL RULES — never break these:
      await page.waitForSelector('<FIRST_INTERACTIVE_ELEMENT_SELECTOR>', { state: 'visible', timeout: 30000 });
 
    Rules:
-   a) Use `waitUntil: 'domcontentloaded'` — NEVER 'networkidle' (hangs on SPAs)
-      and NEVER plain page.goto() without waitUntil.
-   b) Immediately after goto(), add page.waitForSelector() with BOTH { state: 'visible', timeout: 30000 }
-      for the FIRST element the test will interact with (e.g., a nav menu, a heading, a button).
-      This waits for JS redirects to complete and the SPA to finish rendering.
-      The explicit timeout: 30000 is required — CI runners are cold and need extra time.
+   a) Use `waitUntil: 'domcontentloaded'` — NEVER 'networkidle' (hangs on SPAs).
+   b) Immediately after goto(), add page.waitForSelector() for the FIRST element
+      the test will interact with. The explicit timeout: 30000 is required.
    c) The selector in waitForSelector MUST match what Step 2 will click/verify.
 
-   Example — if Step 2 clicks the nav menu (data-testid="sk-nav-menu"):
+   Example — if Step 2 checks the dashboard heading:
+     await page.goto(process.env.pw_HOST!, { waitUntil: 'domcontentloaded' });
+     await page.waitForSelector('#sk-app', { state: 'visible', timeout: 30000 });
+
+   Example — if Step 2 clicks a nav menu item:
      await page.goto(process.env.pw_HOST!, { waitUntil: 'domcontentloaded' });
      await page.waitForSelector('[data-testid="sk-nav-menu"]', { state: 'visible', timeout: 30000 });
-
-   Example — if Step 2 clicks img[alt="Mascotas"]:
-     await page.goto(process.env.pw_HOST!, { waitUntil: 'domcontentloaded' });
-     await page.waitForSelector('img[alt="Mascotas"]', { state: 'visible', timeout: 30000 });
-
-   Example — if Step 2 verifies a heading:
-     await page.goto(process.env.pw_HOST!, { waitUntil: 'domcontentloaded' });
-     await page.waitForSelector('h1', { state: 'visible', timeout: 30000 });
 
 7. NO ALLURE — do NOT add allure.tag(), allure.story(), or similar calls.
 
 8. TEST NAMING — follow this exact pattern:
-     test('RB001 - Short title matching the test_case_name', async ({ page, skye, banorte }) => {
+     test('TC001 - Short title matching the test_case_name', async ({ page, skye, mga }) => {
 
 9. ASSERTIONS — always use expect() from @playwright/test; never console.log as a check.
 
@@ -202,17 +187,16 @@ FEW_SHOTS = [
 
 Test Case JSON:
 {
-  "test_script_num": "RB001",
-  "module": "RB_Pets_Landing_Page",
-  "test_case_name": "Verify Pet landing page with newly added 3 tabs from public page",
-  "description": "Verify user sees 3 tabs: Coberturas base, Servicios opcionales, Exclusiones",
+  "test_script_num": "DASH_001",
+  "module": "Dashboard",
+  "test_case_name": "Validate Dashboard Header Loads",
+  "description": "Verify the MGA dashboard loads and the header is visible after login",
   "steps": [
     {"step_no": 1, "action": "Navigate to the application URL", "input_data": ""},
-    {"step_no": 2, "action": "Click on Mascotas menu item", "input_data": ""},
-    {"step_no": 3, "action": "Click Ver seguro button", "input_data": ""},
-    {"step_no": 4, "action": "Verify 3 tabs are visible", "input_data": ""}
+    {"step_no": 2, "action": "Verify the dashboard main container is visible", "input_data": ""},
+    {"step_no": 3, "action": "Verify page title or heading is displayed", "input_data": ""}
   ],
-  "expected_results": "User should see 3 tabs"
+  "expected_results": "Dashboard header and main container are visible"
 }
 
 User instruction: Generate a Playwright/TypeScript test following the framework conventions.""",
@@ -220,31 +204,24 @@ User instruction: Generate a Playwright/TypeScript test following the framework 
         "assistant": """import { test } from '../../fixtures/Fixtures';
 import { expect } from '@playwright/test';
 import MainPage from '../../pages/MainPage';
-import PetsPage from '../../pages/PetsPage';
 
-test('RB001 - Verify Pet landing page with newly added 3 tabs from public page',
-  async ({ page, skye, banorte }) => {
+test('DASH_001 - Validate Dashboard Header Loads', async ({ page, skye, mga }) => {
 
     const mainPage = new MainPage(page);
-    const petsPage = new PetsPage(page, skye);
 
     await test.step('Step 1: Navigate to the application URL', async () => {
-      await page.goto(process.env.pw_HOST!, { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('img[alt="Mascotas"]', { state: 'visible', timeout: 30000 });
+        await page.goto(process.env.pw_HOST!, { waitUntil: 'domcontentloaded' });
+        await page.waitForSelector('#sk-app', { state: 'visible', timeout: 30000 });
     });
 
-    await test.step('Step 2: Click on Mascotas menu item', async () => {
-      await mainPage.selectProductByAlt('Mascotas');
+    await test.step('Step 2: Verify the dashboard main container is visible', async () => {
+        await expect(page.locator('#sk-app')).toBeVisible();
+        const isLoaded = await mainPage.isLoaded();
+        expect(isLoaded).toBe(true);
     });
 
-    await test.step('Step 3: Click Ver seguro button', async () => {
-      await petsPage.clickOnButton('Ver seguro');
-    });
-
-    await test.step('Step 4: Verify 3 tabs are visible', async () => {
-      await expect(page.getByRole('tab', { name: 'Coberturas base' })).toBeVisible();
-      await expect(page.getByRole('tab', { name: 'Servicios opcionales' })).toBeVisible();
-      await expect(page.getByRole('tab', { name: 'Exclusiones' })).toBeVisible();
+    await test.step('Step 3: Verify page title or heading is displayed', async () => {
+        await expect(page.locator('h1, h2, [data-testid="page-title"]').first()).toBeVisible();
     });
 });""",
     },
@@ -253,42 +230,42 @@ test('RB001 - Verify Pet landing page with newly added 3 tabs from public page',
 
 Test Case JSON:
 {
-  "test_script_num": "RB007",
-  "module": "RB_Pets_Landing_Page",
-  "test_case_name": "Verify phone link is clickable",
-  "description": "Verify user can click phone link on the Pets landing page",
+  "test_script_num": "MGA_002",
+  "module": "Login",
+  "test_case_name": "Validate Login with Valid Credentials",
+  "description": "Verify user can log in with valid username and password",
   "steps": [
-    {"step_no": 1, "action": "Navigate to the application URL", "input_data": ""},
-    {"step_no": 2, "action": "Click on Mascotas menu item", "input_data": ""},
-    {"step_no": 3, "action": "Click on the phone number link", "input_data": ""}
+    {"step_no": 1, "action": "Navigate to the login page", "input_data": ""},
+    {"step_no": 2, "action": "Enter username", "input_data": "usercc"},
+    {"step_no": 3, "action": "Enter password", "input_data": "MGA@1234"},
+    {"step_no": 4, "action": "Click Log in button", "input_data": ""},
+    {"step_no": 5, "action": "Verify user is redirected to the dashboard", "input_data": ""}
   ],
-  "expected_results": "User is redirected to initiate a call"
+  "expected_results": "User successfully logs in and sees the dashboard"
 }
 
 User instruction: Generate a Playwright/TypeScript test following the framework conventions.""",
 
         "assistant": """import { test } from '../../fixtures/Fixtures';
 import { expect } from '@playwright/test';
-import MainPage from '../../pages/MainPage';
+import LoginPage from '../../pages/LoginPage';
 
-test('RB007 - Verify phone link is clickable', async ({ page, skye, banorte }) => {
+test('MGA_002 - Validate Login with Valid Credentials', async ({ page, skye, mga }) => {
 
-    const mainPage = new MainPage(page);
+    const loginPage = new LoginPage(page);
 
-    await test.step('Step 1: Navigate to the application URL', async () => {
-      await page.goto(process.env.pw_HOST!, { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('img[alt="Mascotas"]', { state: 'visible', timeout: 30000 });
+    await test.step('Step 1: Navigate to the login page', async () => {
+        await page.goto(process.env.pw_HOST!, { waitUntil: 'domcontentloaded' });
+        await page.waitForSelector('[placeholder="Enter username"]', { state: 'visible', timeout: 30000 });
     });
 
-    await test.step('Step 2: Click on Mascotas menu item', async () => {
-      await mainPage.selectProductByAlt('Mascotas');
+    await test.step('Step 2 & 3 & 4: Login with valid credentials', async () => {
+        await loginPage.login(process.env.pw_TESTUSER!, process.env.pw_PASSWORD!);
     });
 
-    await test.step('Step 3: Verify phone link is present and has tel: href', async () => {
-      const phoneLink = page.locator('a[href^="tel:"]').first();
-      await expect(phoneLink).toBeVisible();
-      const href = await phoneLink.getAttribute('href');
-      expect(href).toMatch(/^tel:\+?[\d\s\-()+]+$/);
+    await test.step('Step 5: Verify user is redirected to the dashboard', async () => {
+        await page.waitForURL('**/page/internal/**', { timeout: 30000 });
+        await expect(page.locator('#sk-app')).toBeVisible();
     });
 });""",
     },
@@ -300,13 +277,28 @@ test('RB007 - Verify phone link is clickable', async ({ page, skye, banorte }) =
 # ════════════════════════════════════════════════════════════════════════════════
 
 def _main_user_content(test_case_json: dict, user_instruction: str, framework_context: str) -> str:
+    instr = user_instruction.strip()
+    extra_block = ""
+    if instr:
+        extra_block = (
+            f"\n\n"
+            f"═══════════════════════════════════════════════════════════\n"
+            f"EXTRA INSTRUCTIONS (HIGHEST PRIORITY — you MUST follow these):\n"
+            f"═══════════════════════════════════════════════════════════\n"
+            f"{instr}\n"
+            f"═══════════════════════════════════════════════════════════\n"
+            f"\n"
+            f"IMPORTANT: The above extra instructions OVERRIDE the default behavior.\n"
+            f"You MUST incorporate every requirement listed above into the generated test.\n"
+        )
     return (
         f"Framework context (existing Page Objects, fixtures, custom commands):\n"
         f"```typescript\n{framework_context}\n```\n\n"
         f"Test Case JSON:\n"
         f"```json\n{json.dumps(test_case_json, indent=2)}\n```\n\n"
-        f"User instruction: {user_instruction.strip() or 'Generate following the framework conventions strictly.'}\n\n"
-        f"Generate the complete TypeScript test file now:"
+        f"{extra_block}"
+        f"Generate the complete TypeScript test file now. "
+        f"{'Follow the framework conventions strictly.' if not instr else 'Follow both the framework conventions AND the extra instructions above.'}"
     )
 
 
@@ -317,6 +309,23 @@ def _build_anthropic_messages(
     for shot in FEW_SHOTS:
         messages.append({"role": "user",      "content": shot["user"]})
         messages.append({"role": "assistant", "content": shot["assistant"]})
+
+    # If the user provided extra instructions, add a reminder message before the
+    # main request so the LLM sees it prominently in the conversation.
+    instr = user_instruction.strip()
+    if instr:
+        messages.append({"role": "user", "content": (
+            f"IMPORTANT — Before you generate the next script, you MUST follow "
+            f"these extra instructions provided by the user:\n\n{instr}\n\n"
+            f"Acknowledge that you will follow these instructions."
+        )})
+        messages.append({"role": "assistant", "content": (
+            f"Understood. I will follow these extra instructions:\n"
+            f"- {instr}\n\n"
+            f"I will incorporate them into the generated test script while "
+            f"maintaining all framework conventions."
+        )})
+
     messages.append({"role": "user", "content": _main_user_content(
         test_case_json, user_instruction, framework_context
     )})
@@ -332,6 +341,22 @@ def _build_gemini_history(
     for shot in FEW_SHOTS:
         history.append({"role": "user",  "parts": [shot["user"]]})
         history.append({"role": "model", "parts": [shot["assistant"]]})
+
+    # If the user provided extra instructions, add a reminder exchange
+    instr = user_instruction.strip()
+    if instr:
+        history.append({"role": "user", "parts": [(
+            f"IMPORTANT — Before you generate the next script, you MUST follow "
+            f"these extra instructions provided by the user:\n\n{instr}\n\n"
+            f"Acknowledge that you will follow these instructions."
+        )]})
+        history.append({"role": "model", "parts": [(
+            f"Understood. I will follow these extra instructions:\n"
+            f"- {instr}\n\n"
+            f"I will incorporate them into the generated test script while "
+            f"maintaining all framework conventions."
+        )]})
+
     last_msg = _main_user_content(test_case_json, user_instruction, framework_context)
     return history, last_msg
 

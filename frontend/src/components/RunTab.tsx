@@ -1,7 +1,7 @@
 /**
  * Run Testcase Tab — Restyled with deep navy theme
  */
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
 import {
   Card, Select, Button, Tag, Space,
   Badge, Typography, Table, Tooltip, Spin, Empty, Popconfirm, message,
@@ -11,10 +11,12 @@ import {
   CheckCircleFilled, CloseCircleFilled, LoadingOutlined,
   ReloadOutlined, BranchesOutlined, FileTextOutlined,
   SettingOutlined, ThunderboltOutlined, DeleteOutlined,
+  HistoryOutlined,
 } from '@ant-design/icons';
 import toast from 'react-hot-toast';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchSpecFiles, fetchRuns, runSpec, connectRunSocket, fetchRunLogs, deleteRun, cancelRun } from '../api/client';
+import { fetchSpecFiles, fetchRuns, runSpec, connectRunSocket, fetchRunLogs, deleteRun, cancelRun, clearAllRuns } from '../api/client';
+import { useProjectContext } from '../context/ProjectContext';
 import type { ExecutionRun, RunParams, SpecFile } from '../types';
 import { colors, STATUS_COLORS } from '../theme';
 
@@ -55,32 +57,53 @@ const STATUS_ICON: Record<string, React.ReactNode> = {
 };
 
 export default function RunTab() {
+  const { selectedProjectId, selectedProject } = useProjectContext();
   const [selectedSpec, setSelectedSpec] = useState<SpecFile | null>(null);
   const [params, setParams] = useState<RunParams>({
     environment:    'sit',
     browser:        'chromium',
     device:         'Desktop Chrome',
     execution_mode: 'headless',
+    run_target:     'github_actions',
     browser_version:'stable',
-    tags:           ['regression'],
+    tags:           [],
   });
   const [running, setRunning]           = useState(false);
   const [currentRunId, setCurrentRunId] = useState('');
   const [logs, setLogs]                 = useState<string[]>([]);
   const [runStatus, setRunStatus]       = useState<string>('');
   const [ghaUrl, setGhaUrl]             = useState<string>('');
-  const logRef     = useRef<HTMLDivElement>(null);
-  const wsRef      = useRef<WebSocket | null>(null);
-  const pollRef    = useRef<ReturnType<typeof setInterval> | null>(null);
-  const wsLogsRef  = useRef<number>(0);
+  const logRef       = useRef<HTMLDivElement>(null);
+  const wsRef        = useRef<WebSocket | null>(null);
+  const pollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wsLogsRef    = useRef<number>(0);
+
+  // ── Resizable splitter between Live Logs and Execution History ──────────────
+  const [splitPct, setSplitPct]  = useState(55);          // % of right panel for logs
+  const splitRef                 = useRef<HTMLDivElement>(null);
+  const isDragging               = useRef(false);
+
+  useLayoutEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!isDragging.current || !splitRef.current) return;
+      const container = splitRef.current.parentElement!;
+      const rect      = container.getBoundingClientRect();
+      const pct       = ((e.clientY - rect.top) / rect.height) * 100;
+      setSplitPct(Math.min(Math.max(pct, 20), 80));
+    };
+    const onUp = () => { isDragging.current = false; document.body.style.cursor = ''; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, []);
 
   const {
     data: specData,
     isLoading: specsLoading,
     refetch: refetchSpecs,
   } = useQuery<{ specs: SpecFile[]; default_branch: string }>({
-    queryKey: ['spec-files'],
-    queryFn:  () => fetchSpecFiles(),
+    queryKey: ['spec-files', selectedProjectId],
+    queryFn:  () => fetchSpecFiles(undefined, selectedProjectId ?? undefined),
     refetchInterval: 30000,
   });
 
@@ -88,8 +111,8 @@ export default function RunTab() {
   const defaultBranch = specData?.default_branch ?? 'ai-playwright-tests';
 
   const { data: runs = [], refetch: refetchRuns } = useQuery<ExecutionRun[]>({
-    queryKey: ['runs'],
-    queryFn:  fetchRuns,
+    queryKey: ['runs', selectedProjectId],
+    queryFn:  () => fetchRuns(selectedProjectId ?? undefined),
     refetchInterval: running ? 2000 : 10000,
   });
 
@@ -122,16 +145,17 @@ export default function RunTab() {
     try {
       const mode = params.execution_mode;
       console.log('[RunTab] execution_mode from state:', mode, '| all params:', JSON.stringify(params));
-      toast(`Triggering ${mode.toUpperCase()} mode on ${params.browser}`, {
-        icon: mode === 'headed' ? '🖥️' : '👻',
+      const targetLabel = params.run_target === 'local' ? 'LOCAL' : 'GitHub Actions';
+      toast(`Triggering ${mode.toUpperCase()} mode on ${params.browser} via ${targetLabel}`, {
+        icon: params.run_target === 'local' ? '💻' : '🔄',
         duration: 4000,
       });
 
       // Show the mode in the live logs so user can verify
       setLogs((prev) => [
         ...prev,
-        `🔧 UI Config: execution_mode=${mode}, browser=${params.browser}, env=${params.environment}`,
-        `📤 Sending to backend with execution_mode="${mode}"...`,
+        `🔧 UI Config: execution_mode=${mode}, browser=${params.browser}, env=${params.environment}, target=${targetLabel}`,
+        `📤 Sending to backend with execution_mode="${mode}", run_target="${params.run_target}"...`,
       ]);
 
       const payload = {
@@ -141,7 +165,9 @@ export default function RunTab() {
         browser:        params.browser,
         device:         params.device,
         execution_mode: mode,
+        run_target:     params.run_target,
         tags:           params.tags.join(','),
+        project_id:     selectedProjectId ?? undefined,
       };
       console.log('[RunTab] sending to /api/run-spec:', JSON.stringify(payload));
       const { run_id } = await runSpec(payload);
@@ -218,6 +244,16 @@ export default function RunTab() {
     }
   };
 
+  const handleClearAll = async () => {
+    try {
+      const res = await clearAllRuns();
+      message.success(`Cleared ${res.deleted} run${res.deleted !== 1 ? 's' : ''}`);
+      queryClient.invalidateQueries({ queryKey: ['runs'] });
+    } catch {
+      message.error('Failed to clear runs');
+    }
+  };
+
   const handleCancelRun = async (id: string) => {
     try {
       await cancelRun(id);
@@ -246,6 +282,24 @@ export default function RunTab() {
       render: (_: unknown, r: ExecutionRun) => (
         <Space>{STATUS_ICON[r.status]} <Text style={{ fontSize: 11, fontWeight: 600, color: STATUS_COLORS[r.status] }}>{r.status}</Text></Space>
       ),
+    },
+    {
+      title: 'Target', width: 70,
+      render: (_: unknown, r: ExecutionRun) => {
+        const isLocal = r.run_target === 'local';
+        return (
+          <Tag style={{
+            background: isLocal ? '#0ea5e915' : '#f59e0b15',
+            color: isLocal ? '#38bdf8' : '#fbbf24',
+            border: 'none',
+            borderRadius: 4,
+            fontSize: 10,
+            fontWeight: 600,
+          }}>
+            {isLocal ? '💻' : '🔄'} {isLocal ? 'Local' : 'GHA'}
+          </Tag>
+        );
+      },
     },
     {
       title: 'Spec File', ellipsis: true,
@@ -351,7 +405,7 @@ export default function RunTab() {
           ) : specFiles.length === 0 ? (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={<span style={{ color: colors.textMuted }}>No spec files — generate tests in AI Phase tab</span>}
+              description={<span style={{ color: colors.textMuted }}>No spec files found — generate tests in AI Phase tab{selectedProject ? ` for ${selectedProject.name}` : ''}</span>}
               style={{ margin: '8px 0' }}
             />
           ) : (
@@ -365,14 +419,22 @@ export default function RunTab() {
             >
               {specFiles.map((s) => {
                 const key = `${s.path}|||${s.branch}`;
+                const isLocal = !!s.repo;
+                const repoLabel = s.repo || s.branch;
                 return (
                   <Option key={key} value={key} label={s.name}>
                     <Space>
-                      <FileTextOutlined style={{ color: colors.primaryLight, fontSize: 12 }} />
+                      <FileTextOutlined style={{ color: isLocal ? '#f59e0b' : colors.primaryLight, fontSize: 12 }} />
                       <Text style={{ fontSize: 12 }} ellipsis>{s.name}</Text>
-                      <Tag style={{ background: `${colors.cyan}15`, color: colors.cyan, border: 'none', fontSize: 10, borderRadius: 4 }}>
-                        <BranchesOutlined /> {s.branch}
-                      </Tag>
+                      {isLocal ? (
+                        <Tag style={{ background: '#f59e0b22', color: '#f59e0b', border: 'none', fontSize: 10, borderRadius: 4 }}>
+                          🏢 {repoLabel.toUpperCase()}
+                        </Tag>
+                      ) : (
+                        <Tag style={{ background: `${colors.cyan}15`, color: colors.cyan, border: 'none', fontSize: 10, borderRadius: 4 }}>
+                          <BranchesOutlined /> {s.branch}
+                        </Tag>
+                      )}
                     </Space>
                   </Option>
                 );
@@ -381,9 +443,15 @@ export default function RunTab() {
           )}
           {selectedSpec && (
             <div style={{ marginTop: 8, fontSize: 11 }}>
-              <Tag style={{ background: `${colors.cyan}15`, color: colors.cyan, border: 'none', borderRadius: 4 }}>
-                <BranchesOutlined /> {selectedSpec.branch}
-              </Tag>
+              {selectedSpec.repo ? (
+                <Tag style={{ background: '#f59e0b22', color: '#f59e0b', border: 'none', borderRadius: 4 }}>
+                  🏢 {selectedSpec.repo.toUpperCase()} — GitHub Actions
+                </Tag>
+              ) : (
+                <Tag style={{ background: `${colors.cyan}15`, color: colors.cyan, border: 'none', borderRadius: 4 }}>
+                  <BranchesOutlined /> {selectedSpec.branch}
+                </Tag>
+              )}
               <Text style={{ fontSize: 10, color: colors.textMuted, marginLeft: 4 }}>{selectedSpec.path}</Text>
             </div>
           )}
@@ -444,6 +512,24 @@ export default function RunTab() {
               </Select>
             </div>
 
+            <div><div style={labelStyle}>Run Target</div>
+              <Select value={params.run_target} style={{ width: '100%' }}
+                onChange={(v) => setParam('run_target', v)}>
+                <Option value="local">
+                  <Space>
+                    <span style={{ fontSize: 14 }}>💻</span>
+                    <span>Local Machine</span>
+                  </Space>
+                </Option>
+                <Option value="github_actions">
+                  <Space>
+                    <span style={{ fontSize: 14 }}>🔄</span>
+                    <span>GitHub Actions</span>
+                  </Space>
+                </Option>
+              </Select>
+            </div>
+
             <div><div style={labelStyle}>Tags</div>
               <Select mode="multiple" value={params.tags} style={{ width: '100%' }}
                 onChange={(v) => setParam('tags', v)}>
@@ -456,24 +542,6 @@ export default function RunTab() {
             </div>
           </Space>
         </Card>
-
-        {/* Mode confirmation badge */}
-        <div style={{
-          background: params.execution_mode === 'headed' ? '#166534' : '#1e3a5f',
-          border: `1px solid ${params.execution_mode === 'headed' ? '#16a34a' : '#3b82f6'}`,
-          borderRadius: 8,
-          padding: '8px 14px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          fontSize: 13,
-          fontWeight: 600,
-          color: params.execution_mode === 'headed' ? '#86efac' : '#93c5fd',
-        }}>
-          <span style={{ fontSize: 18 }}>{params.execution_mode === 'headed' ? '🖥️' : '👻'}</span>
-          Will run in <span style={{ textTransform: 'uppercase', letterSpacing: 1 }}>{params.execution_mode}</span> mode
-          {params.execution_mode === 'headed' && <span style={{ fontSize: 11, fontWeight: 400, opacity: 0.8 }}> — browser window will open on runner machine</span>}
-        </div>
 
         {/* Run button */}
         <Space.Compact block>
@@ -495,98 +563,167 @@ export default function RunTab() {
         </Space.Compact>
       </div>
 
-      {/* RIGHT — logs + history */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* RIGHT — logs + history with drag-to-resize splitter */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-        {/* Live log terminal */}
-        <Card
-          size="small"
-          className="glow-card"
-          title={
-            <Space wrap>
-              <span style={{ fontWeight: 600 }}>Live Logs</span>
-              {running && <Badge status="processing" text={<span style={{ color: colors.primaryLight }}>Running</span>} />}
-              {runStatus === 'passed' && <Badge status="success" text={<span style={{ color: colors.success }}>Passed</span>} />}
-              {runStatus === 'failed' && <Badge status="error" text={<span style={{ color: colors.danger }}>Failed</span>} />}
-              {ghaUrl && (
-                <a href={ghaUrl} target="_blank" rel="noreferrer"
-                   style={{ fontSize: 11, color: colors.primaryLight }}>
-                  <LinkOutlined /> GitHub Actions
-                </a>
-              )}
-            </Space>
-          }
-          style={{ flex: 1, background: colors.bgCard, border: `1px solid ${colors.border}` }}
-          bodyStyle={{ padding: 0, display: 'flex', flexDirection: 'column' }}
-        >
-          {/* Terminal header with dots */}
-          <div className="log-terminal-header">
-            <span className="dot dot-red" />
-            <span className="dot dot-yellow" />
-            <span className="dot dot-green" />
-            <span style={{ fontSize: 10, color: colors.textMuted, marginLeft: 8 }}>terminal</span>
-          </div>
-
-          <div
-            ref={logRef}
-            className={`live-log-terminal ${running ? 'is-active' : ''}`}
-            style={{
-              color: '#e2e8f0',
-              fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
-              fontSize: 12,
-              padding: '12px 16px',
-              height: 340,
-              overflowY: 'auto',
-              lineHeight: 1.7,
-            }}
-          >
-            {logs.length === 0 && !running && (
-              <span style={{ color: colors.textMuted }}>
-                Select a spec file and click "Run Test" to start...
-              </span>
-            )}
-            {logs.map((line, i) => {
-              let colour = '#e2e8f0';
-              if (line.includes('PASSED') || line.includes('✅')) colour = colors.success;
-              else if (line.includes('FAILED') || line.includes('❌')) colour = colors.danger;
-              else if (line.includes('⏳') || line.includes('🔍')) colour = colors.primaryLight;
-              else if (line.includes('✓')) colour = colors.successLight;
-              else if (line.includes('🚀')) colour = colors.violet;
-              return (
-                <div key={i} style={{ color: colour }}>
-                  {line}
-                </div>
-              );
-            })}
-            {running && (
-              <span className="pulse-dot" style={{
-                display: 'inline-block',
-                width: 8, height: 8,
-                borderRadius: '50%',
-                background: colors.primary,
-                marginTop: 4,
-              }} />
-            )}
-          </div>
-        </Card>
-
-        {/* Execution history */}
-        <Card
-          size="small"
-          className="glow-card section-card"
-          title={<Space><CloseCircleFilled style={{ color: colors.primaryLight }} /> <span>Execution History</span></Space>}
-          style={{ flex: 1, overflow: 'auto', background: colors.bgCard, border: `1px solid ${colors.border}` }}
-        >
-          <Table
-            dataSource={runs}
-            columns={runColumns}
-            rowKey="id"
+        {/* Live log terminal — top pane */}
+        <div style={{ height: `${splitPct}%`, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <Card
             size="small"
-            pagination={{ pageSize: 8, size: 'small' }}
-            scroll={{ y: 220, x: 900 }}
-            rowClassName={(r: ExecutionRun) => `status-row-${r.status}`}
+            className="glow-card"
+            title={
+              <Space wrap>
+                <span style={{ fontWeight: 600 }}>Live Logs</span>
+                {running && <Badge status="processing" text={<span style={{ color: colors.primaryLight }}>Running</span>} />}
+                {runStatus === 'passed' && <Badge status="success" text={<span style={{ color: colors.success }}>Passed</span>} />}
+                {runStatus === 'failed' && <Badge status="error" text={<span style={{ color: colors.danger }}>Failed</span>} />}
+                {ghaUrl && (
+                  <a href={ghaUrl} target="_blank" rel="noreferrer"
+                     style={{ fontSize: 11, color: colors.primaryLight }}>
+                    <LinkOutlined /> GitHub Actions
+                  </a>
+                )}
+              </Space>
+            }
+            style={{ flex: 1, background: colors.bgCard, border: `1px solid ${colors.border}`, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+            bodyStyle={{ padding: 0, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+          >
+            <div className="log-terminal-header">
+              <span className="dot dot-red" />
+              <span className="dot dot-yellow" />
+              <span className="dot dot-green" />
+              <span style={{ fontSize: 10, color: colors.textMuted, marginLeft: 8 }}>terminal</span>
+            </div>
+            <div
+              ref={logRef}
+              className={`live-log-terminal ${running ? 'is-active' : ''}`}
+              style={{
+                flex: 1,
+                color: '#e2e8f0',
+                fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
+                fontSize: 12,
+                padding: '12px 16px',
+                overflowY: 'auto',
+                lineHeight: 1.7,
+              }}
+            >
+              {logs.length === 0 && !running && (
+                <span style={{ color: colors.textMuted }}>
+                  Select a spec file and click "Run Test" to start...
+                </span>
+              )}
+              {logs.map((line, i) => {
+                let colour = '#e2e8f0';
+                if (line.includes('PASSED') || line.includes('✅')) colour = colors.success;
+                else if (line.includes('FAILED') || line.includes('❌')) colour = colors.danger;
+                else if (line.includes('⏳') || line.includes('🔍')) colour = colors.primaryLight;
+                else if (line.includes('✓')) colour = colors.successLight;
+                else if (line.includes('🚀')) colour = colors.violet;
+                return <div key={i} style={{ color: colour }}>{line}</div>;
+              })}
+              {running && (
+                <span className="pulse-dot" style={{
+                  display: 'inline-block', width: 8, height: 8,
+                  borderRadius: '50%', background: colors.primary, marginTop: 4,
+                }} />
+              )}
+            </div>
+          </Card>
+        </div>
+
+        {/* Drag handle */}
+        <div
+          ref={splitRef}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            isDragging.current = true;
+            document.body.style.cursor = 'row-resize';
+          }}
+          style={{
+            height: 8,
+            flexShrink: 0,
+            cursor: 'row-resize',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'transparent',
+            zIndex: 10,
+          }}
+        >
+          <div style={{
+            width: 48,
+            height: 4,
+            borderRadius: 2,
+            background: colors.violet + '66',
+            transition: 'background 0.15s',
+          }}
+            onMouseEnter={e => (e.currentTarget.style.background = colors.violet)}
+            onMouseLeave={e => (e.currentTarget.style.background = colors.violet + '66')}
           />
-        </Card>
+        </div>
+
+        {/* Execution history — bottom pane */}
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <Card
+            size="small"
+            className="glow-card section-card"
+            title={
+              <Space>
+                <HistoryOutlined style={{ color: colors.violet }} />
+                <span style={{ fontWeight: 600, letterSpacing: '0.02em' }}>Execution History</span>
+              </Space>
+            }
+            extra={
+              <Space size={6}>
+                <Button
+                  type="text" size="small" icon={<ReloadOutlined />}
+                  onClick={() => refetchRuns()}
+                  style={{ color: colors.textMuted }}
+                  title="Refresh"
+                />
+                <Popconfirm
+                  title="Clear all runs?"
+                  description="Permanently delete all execution history."
+                  okText="Clear All"
+                  okButtonProps={{ danger: true }}
+                  cancelText="Cancel"
+                  onConfirm={handleClearAll}
+                >
+                  <Button
+                    type="text" size="small" icon={<DeleteOutlined />}
+                    style={{ color: colors.danger }}
+                    title="Clear all runs"
+                  />
+                </Popconfirm>
+              </Space>
+            }
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflow: 'hidden',
+              background: colors.bgCard,
+              border: `1px solid ${colors.violet}55`,
+              borderRadius: 10,
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+            headStyle={{
+              borderBottom: `1px solid ${colors.violet}33`,
+              background: `${colors.violet}08`,
+            }}
+            bodyStyle={{ flex: 1, overflow: 'auto', padding: '0 0' }}
+          >
+            <Table
+              dataSource={runs}
+              columns={runColumns}
+              rowKey="id"
+              size="small"
+              pagination={{ pageSize: 8, size: 'small' }}
+              scroll={{ x: 900 }}
+              rowClassName={(r: ExecutionRun) => `status-row-${r.status}`}
+            />
+          </Card>
+        </div>
       </div>
     </div>
   );

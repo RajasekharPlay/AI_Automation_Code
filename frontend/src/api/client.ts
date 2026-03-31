@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { Project, MCPConfig, MCPStep, MCPEvent } from '../types';
 
 // Use relative URLs so requests go through the Vite dev proxy → avoids CORS entirely.
 // Vite config: '/api' proxied to http://localhost:8000, '/ws' proxied to ws://localhost:8000
@@ -6,23 +7,51 @@ const BASE_URL = '';
 
 export const api = axios.create({ baseURL: BASE_URL });
 
+
+// ── Projects ─────────────────────────────────────────────────────────────────
+export const fetchProjects = async (): Promise<Project[]> => {
+  const { data } = await api.get('/api/projects');
+  return data;
+};
+
+export const createProject = async (project: Partial<Project>): Promise<Project> => {
+  const { data } = await api.post('/api/projects', project);
+  return data;
+};
+
+export const updateProject = async (id: string, project: Partial<Project>): Promise<Project> => {
+  const { data } = await api.put(`/api/projects/${id}`, project);
+  return data;
+};
+
+export const deleteProject = async (id: string) => {
+  const { data } = await api.delete(`/api/projects/${id}`);
+  return data;
+};
+
+
 // ── Excel Upload ──────────────────────────────────────────────────────────────
-export const uploadExcel = async (file: File) => {
+export const uploadExcel = async (file: File, projectId?: string) => {
   const fd = new FormData();
   fd.append('file', file);
+  if (projectId) fd.append('project_id', projectId);
   const { data } = await api.post('/api/parse-excel', fd);
   return data;
 };
 
 // ── Test Cases ────────────────────────────────────────────────────────────────
-export const fetchTestCases = async () => {
-  const { data } = await api.get('/api/test-cases');
+export const fetchTestCases = async (projectId?: string) => {
+  const params: Record<string, string> = {};
+  if (projectId) params.project_id = projectId;
+  const { data } = await api.get('/api/test-cases', { params });
   return data;
 };
 
 // ── Scripts ───────────────────────────────────────────────────────────────────
-export const fetchScripts = async () => {
-  const { data } = await api.get('/api/scripts');
+export const fetchScripts = async (projectId?: string) => {
+  const params: Record<string, string> = {};
+  if (projectId) params.project_id = projectId;
+  const { data } = await api.get('/api/scripts', { params });
   return data;
 };
 
@@ -32,8 +61,10 @@ export const fetchScript = async (id: string) => {
 };
 
 // ── Runs ──────────────────────────────────────────────────────────────────────
-export const fetchRuns = async () => {
-  const { data } = await api.get('/api/runs');
+export const fetchRuns = async (projectId?: string) => {
+  const params: Record<string, string> = {};
+  if (projectId) params.project_id = projectId;
+  const { data } = await api.get('/api/runs', { params });
   return data;
 };
 
@@ -44,6 +75,17 @@ export const fetchRun = async (id: string) => {
 
 export const deleteRun = async (id: string) => {
   const { data } = await api.delete(`/api/runs/${id}`);
+  return data;
+};
+
+export const clearAllRuns = async () => {
+  const { data } = await api.delete('/api/runs');
+  return data;
+};
+
+export const clearAllData = async () => {
+  // DELETE /api/scripts wipes runs + prompts + scripts + test_cases in FK-safe order
+  const { data } = await api.delete('/api/scripts');
   return data;
 };
 
@@ -60,16 +102,19 @@ export const startRun = async (params: {
   execution_mode: string;
   browser_version: string;
   tags: string;
+  project_id?: string;
 }) => {
   const fd = new FormData();
-  Object.entries(params).forEach(([k, v]) => fd.append(k, v));
+  Object.entries(params).forEach(([k, v]) => { if (v) fd.append(k, v); });
   const { data } = await api.post('/api/run-test', fd);
   return data;
 };
 
 // ── Spec Files (from GitHub branch) ──────────────────────────────────────
-export const fetchSpecFiles = async (branch?: string) => {
-  const params = branch ? { branch } : {};
+export const fetchSpecFiles = async (branch?: string, projectId?: string) => {
+  const params: Record<string, string> = {};
+  if (branch) params.branch = branch;
+  if (projectId) params.project_id = projectId;
   const { data } = await api.get('/api/spec-files', { params });
   return data;
 };
@@ -81,13 +126,13 @@ export const runSpec = async (params: {
   browser: string;
   device: string;
   execution_mode: string;
+  run_target: string;
   tags: string;
+  project_id?: string;
 }) => {
   console.log('[client.ts] runSpec called with execution_mode:', params.execution_mode);
   const fd = new FormData();
-  Object.entries(params).forEach(([k, v]) => fd.append(k, v));
-  // Log what FormData actually contains
-  console.log('[client.ts] FormData entries:', [...fd.entries()].map(([k, v]) => `${k}=${v}`).join(', '));
+  Object.entries(params).forEach(([k, v]) => { if (v) fd.append(k, v); });
   const { data } = await api.post('/api/run-spec', fd);
   return data;
 };
@@ -117,11 +162,13 @@ export function createScriptStream(
   onDone: (scriptId: string, isValid: boolean, errors: string) => void,
   onError: (msg: string) => void,
   llmProvider: string = '',   // "anthropic" | "gemini" | "" (use server default)
+  projectId: string = '',
 ): () => void {
   const fd = new FormData();
   fd.append('test_case_id', testCaseId);
   fd.append('user_instruction', userInstruction);
   fd.append('llm_provider', llmProvider);
+  if (projectId) fd.append('project_id', projectId);
 
   let aborted = false;
   const controller = new AbortController();
@@ -185,6 +232,163 @@ export function connectRunSocket(
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${window.location.host}/ws/run/${runId}`);
   ws.onmessage = (e) => onLine(e.data);
+  ws.onclose = onClose;
+  return ws;
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MCP Browser — AI Browser Tab API
+// ══════════════════════════════════════════════════════════════════════════════
+
+export const startMCPSession = async (config: MCPConfig) => {
+  const { data } = await api.post('/api/mcp/start-session', config);
+  return data as { session_id: string; status: string; browser: string; headless: boolean; url: string };
+};
+
+export const mcpAction = async (sessionId: string, action: string, params: Record<string, string> = {}) => {
+  const { data } = await api.post('/api/mcp/action', { session_id: sessionId, action, ...params });
+  return data;
+};
+
+export const mcpPause = async (sessionId: string) => {
+  const { data } = await api.post('/api/mcp/pause', { session_id: sessionId });
+  return data;
+};
+
+export const mcpResume = async (sessionId: string) => {
+  const { data } = await api.post('/api/mcp/resume', { session_id: sessionId });
+  return data;
+};
+
+export const stopMCPSession = async (sessionId: string) => {
+  const { data } = await api.post('/api/mcp/stop-session', { session_id: sessionId });
+  return data;
+};
+
+export const fetchMCPSessions = async (projectId?: string) => {
+  const params: Record<string, string> = {};
+  if (projectId) params.project_id = projectId;
+  const { data } = await api.get('/api/mcp/sessions', { params });
+  return data;
+};
+
+/** SSE stream for AI auto-exploration */
+export function mcpAutoExplore(
+  sessionId: string,
+  testCaseDescription: string,
+  url: string,
+  onEvent: (event: MCPEvent) => void,
+  onDone: () => void,
+  onError: (msg: string) => void,
+  llmProvider: string = '',
+  projectId: string = '',
+): () => void {
+  let aborted = false;
+  const controller = new AbortController();
+
+  fetch(`${BASE_URL}/api/mcp/auto-explore`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: sessionId,
+      test_case_description: testCaseDescription,
+      url,
+      llm_provider: llmProvider,
+      project_id: projectId,
+    }),
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done || aborted) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const payload = JSON.parse(line.slice(6)) as MCPEvent;
+            onEvent(payload);
+            if (payload.type === 'done') onDone();
+          } catch { /* ignore */ }
+        }
+      }
+    })
+    .catch((e) => { if (!aborted) onError(String(e)); });
+
+  return () => { aborted = true; controller.abort(); };
+}
+
+/** SSE stream for script generation from MCP exploration */
+export function mcpGenerateScript(
+  sessionId: string,
+  testCaseDescription: string,
+  onChunk: (text: string) => void,
+  onDone: (scriptId: string, isValid: boolean, errors: string) => void,
+  onError: (msg: string) => void,
+  llmProvider: string = '',
+  projectId: string = '',
+): () => void {
+  let aborted = false;
+  const controller = new AbortController();
+
+  fetch(`${BASE_URL}/api/mcp/generate-script`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: sessionId,
+      test_case_description: testCaseDescription,
+      llm_provider: llmProvider,
+      project_id: projectId,
+    }),
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done || aborted) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const payload = JSON.parse(line.slice(6));
+            if (payload.type === 'chunk') onChunk(payload.text);
+            else if (payload.type === 'done') onDone(payload.script_id, payload.valid, payload.errors ?? '');
+            else if (payload.type === 'error') onError(payload.message);
+          } catch { /* ignore */ }
+        }
+      }
+    })
+    .catch((e) => { if (!aborted) onError(String(e)); });
+
+  return () => { aborted = true; controller.abort(); };
+}
+
+/** WebSocket for live MCP events */
+export function connectMCPSocket(
+  sessionId: string,
+  onEvent: (event: MCPEvent) => void,
+  onClose: () => void,
+): WebSocket {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${window.location.host}/ws/mcp/${sessionId}`);
+  ws.onmessage = (e) => {
+    try { onEvent(JSON.parse(e.data)); } catch { /* ignore */ }
+  };
   ws.onclose = onClose;
   return ws;
 }

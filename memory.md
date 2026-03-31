@@ -144,37 +144,9 @@ google-generativeai>=0.8.0  # NEW
 ```
 - Installed: `anthropic==0.84.0`, `google-generativeai==0.8.6`
 
-#### Updated: `backend/main.py`
-- Import changed: `from llm_orchestrator import stream_script, active_provider_info`
-- New endpoint: `GET /api/llm-provider` → returns `active_provider_info()`
-- `generate_script_endpoint` now accepts: `llm_provider: str = Form(default="")`
-- Passes `provider=llm_provider.strip().lower() or None` to `stream_script()`
-- `UserPrompt.model_used` reads from `usage.get("model", ...)` — tracks actual model used
-
-#### Updated: `frontend/src/api/client.ts`
-- Added `fetchLLMProvider()`: `GET /api/llm-provider`
-- Added `llmProvider: string = ''` param to `createScriptStream()` — appended to FormData
-
-#### Updated: `frontend/src/components/AIPhaseTab.tsx`
-- Added `LLMProvider` type and `ProviderInfo` interface
-- Added `provider` and `providerInfo` state
-- `useEffect` fetches `/api/llm-provider` on mount → sets default provider from backend
-- Added **"1. LLM Provider"** card with `Radio.Group`:
-  - 🤖 Anthropic button (disabled if `ANTHROPIC_API_KEY` not set)
-  - ✨ Gemini button (disabled if `GEMINI_API_KEY` not set)
-- Shows active model name as colored `Tag` (purple=Anthropic, blue=Gemini)
-- Shows ⚠ warning if selected provider's API key is not configured
-- Step numbers shifted: Upload=2, Select Test Case=3, Extra Instructions=4
-- `createScriptStream()` passes `provider` as last argument
-- Streaming status: `▶ Streaming from {Gemini|Claude}…`
-
 #### Bug Fix (same session): Duplicate `TextArea` Declaration
 - **Problem:** `const { TextArea } = Input;` declared twice on lines 34 and 36
 - **Fix:** Removed duplicate line (kept line 34)
-
-#### Cleanup: Removed unused imports from `AIPhaseTab.tsx`
-- Removed `Select`, `Divider` from antd imports
-- Removed `type { UploadFile }` import
 
 ---
 
@@ -183,12 +155,7 @@ google-generativeai>=0.8.0  # NEW
 ### Actions
 - User updated both `ANTHROPIC_API_KEY` and `GEMINI_API_KEY` in `backend/.env`
 - Killed old Python/uvicorn processes
-- Restarted backend via PowerShell:
-  ```powershell
-  Start-Process -FilePath 'venv\Scripts\uvicorn.exe' `
-    -ArgumentList 'main:app','--host','127.0.0.1','--port','8000','--reload' `
-    -WorkingDirectory 'C:\Users\RajasekharUdumula\Desktop\ai-test-platform\backend'
-  ```
+- Restarted backend
 - Health check confirmed: `{"status": "ok"}`
 - Created `CLAUDE.md` (project memory for Claude Code)
 - Created `memory.md` (this file — full changelog)
@@ -197,28 +164,219 @@ google-generativeai>=0.8.0  # NEW
 
 ## Session 7 — Remove Validation Gate from Run Tab
 
-### Problem
-Generated scripts marked `validation_status = 'invalid'` by `tsc --noEmit` were not appearing in the "Select Generated Script" dropdown in RunTab.  The script was correctly generated and saved to the framework repo, but the frontend filter blocked it from being run.
-
-### Root Cause
-`frontend/src/components/RunTab.tsx` line 78 had:
-```ts
-const scripts = allScripts.filter((s) => s.validation_status === 'valid');
-```
-This silently excluded any script where TypeScript strict-mode emitted warnings (even false positives from framework-level types).  The backend `POST /api/run-test` never checked `validation_status` — only `file_path` and `typescript_code` presence — so the gate was frontend-only.
-
 ### Fix Applied
-- **`RunTab.tsx`**: Removed the `.filter()` — `scripts` now equals `allScripts` (all generated scripts shown).
-- Placeholder updated: `'No scripts yet — generate first'` / `'Choose a generated script…'`
-- Dropdown tag colour: green = `valid`, orange = other statuses (informational only, not a gate).
-- Selected-script info tag: shows `✓ valid` (green) or `⚠ tsc warnings` (orange) — run is always allowed.
-
-### Key Rule Going Forward
-TypeScript validation (`tsc --noEmit`) is **informational only**.  It must never block saving or running a generated script.  The `validation_status` field in the DB is a diagnostic hint, not an execution gate.
+- **`RunTab.tsx`**: Removed the `.filter()` — all generated scripts shown
+- TypeScript validation (`tsc --noEmit`) is **informational only** — never blocks running
+- Dropdown tag colour: green = `valid`, orange = other statuses
 
 ---
 
-## 📊 Current State (as of last update)
+## Session 8 — Live Logs & GitHub Actions Fix
+
+### Problems
+1. No live logs visible in Run Testcase tab
+2. No GitHub Actions workflow in the repo
+3. Race condition: background task published Redis messages before WebSocket connected
+4. No fallback if WebSocket missed logs
+
+### Fixes
+- Added `await asyncio.sleep(2)` before first `pub()` call
+- Changed `pub()` to also `RPUSH` every log line to Redis list `run:{run_id}:log_history`
+- `websocket_manager.py`: subscribe first → replay history → listen for new messages
+- Added `GET /api/runs/{run_id}/logs` HTTP fallback endpoint
+- Frontend: HTTP polling fallback if WebSocket delivers 0 lines in 6s
+- Created `.github/workflows/playwright.yml` in QA_Automation_Banorte repo
+
+---
+
+## Session 9 — Critical DB Session Bug Fix (generate-script)
+
+### Root Cause — FastAPI StreamingResponse + dependency lifecycle mismatch
+`generate_script_endpoint` returns `StreamingResponse` immediately — the `get_db` session was committed/closed BEFORE the generator ran.
+
+### Fix
+Inside `event_stream()` generator — replaced `await db.flush()` with dedicated `async with AsyncSessionLocal() as save_db:` block with explicit `await save_db.commit()`.
+
+**Rule: Never use the request `db` inside a StreamingResponse generator.**
+
+---
+
+## Session 10 — Multiple Stale Uvicorn Processes + Dropdown Filter Fix
+
+### Problem
+4 processes LISTENING on port 8000 — old processes handling requests instead of the fixed one.
+
+### Fix 1
+Kill all Python processes, start ONE clean uvicorn instance.
+
+### Fix 2 — `RunTab.tsx` dropdown filter
+Only show scripts where `file_path != null` — hides stale scripts that were never fully saved.
+
+---
+
+## Session 11 — Race Condition #2 Fix: `asyncio.create_task()` before DB commit
+
+### Root Cause
+`run_test_endpoint` called `asyncio.create_task()` before `get_db` committed the run record. Background task's `db.get(run_id)` returned `None` → silent exit.
+
+### Fix
+Added explicit `await db.commit()` before `asyncio.create_task()`.
+
+**Rule: Always `await db.commit()` before `create_task()` when using `get_db`.**
+
+---
+
+## Session 12 — GHA "Project ai-chromium not found" Fix
+
+### Fix
+- Committed `playwright.config.ts` with ai-* projects to `main` branch on GitHub
+- Workflow YAML: added step to sync `playwright.config.ts` from `main` into `ai-tests-staging`
+- Changed trigger ref from staging branch to `"main"`
+
+---
+
+## Session 13 — Push-Trigger Re-Triggers Old Workflow + Log Streaming Fix
+
+### Fix 1
+Copied updated `playwright.yml` to `ai-tests-staging` — both branches have same YAML.
+
+### Fix 2
+Refactored `_wait_for_run()` to accept `pub` parameter — all status updates go through `pub()` (writes to both pub/sub AND Redis history list).
+
+### Fix 3
+Added `{ waitUntil: 'networkidle' }` to `page.goto()` in SYSTEM_PROMPT and all existing specs.
+
+---
+
+## Session 14 — Spec Files Dropdown + GitHub Actions Integration
+
+### Feature: Run spec files from GitHub branch via dropdown
+
+#### New: `backend/github_actions_runner.py`
+- `list_spec_files_from_branch(branch)` — GitHub recursive tree API
+- `ensure_ai_tests_branch()` — creates `ai-playwright-tests` if needed
+- `commit_spec_to_ai_branch(spec_filename, code)` — commits spec to AI tests branch
+- `run_existing_spec_via_gha(run_id, spec_path, branch, ...)` — triggers GHA for existing files
+
+#### New endpoints
+- `GET /api/spec-files` — lists .spec.ts from GitHub branch
+- `POST /api/run-spec` — runs existing spec via GitHub Actions
+- `POST /api/ensure-branch` — creates branch if missing
+
+#### New DB columns
+- `spec_file_path VARCHAR(500)` — GitHub path of spec
+- `spec_branch VARCHAR(200)` — branch the spec was run from
+- `script_id` → nullable
+
+#### Frontend: `RunTab.tsx` rewritten
+- Old: selected scripts from DB
+- New: selects spec files from GitHub branch via `/api/spec-files`
+
+---
+
+## Session 15 — MGA Repo Integration + GitHub Actions Self-Hosted Runner
+
+### Context
+New test repo `RajasekharPlay/AI_Automation_MGA` added. MGA spec file `MGA_Validate.spec.ts` already committed in repo. Tests run against internal app `skye1.dev.mga.innoveo-skye.net` (private network — not reachable from GitHub cloud runners).
+
+### Problem 1: `NotImplementedError` running MGA specs locally
+Windows `SelectorEventLoop` doesn't support asyncio subprocess transport. Attempted fixes with `asyncio.to_thread`, `threading.Thread`, and `asyncio.Queue` all raised `NotImplementedError`.
+
+**Fix:** Switched MGA execution entirely to **GitHub Actions** — removed local runner.
+
+### Problem 2: Private network not accessible from GitHub cloud runners
+GitHub's `ubuntu-latest` cannot reach `skye1.dev.mga.innoveo-skye.net`.
+
+**Fix: Self-hosted runner installed on user's machine**
+```
+Location: C:\actions-runner\
+Name:      RajasekharUdumula-PC
+Labels:    self-hosted, Windows, X64
+Status:    online
+```
+Setup steps performed:
+1. Downloaded runner v2.332.0 from GitHub
+2. Extracted to `C:\actions-runner`
+3. Configured: `.\config.cmd --url https://github.com/RajasekharPlay/AI_Automation_MGA --token ... --unattended`
+4. Started: `Start-Process C:\actions-runner\run.cmd`
+5. Verified: `Status: online` via GitHub API
+
+**To make permanent (run PowerShell as Administrator):**
+```powershell
+cd C:\actions-runner
+.\svc.cmd install
+.\svc.cmd start
+```
+
+### New: `backend/github_actions_runner.py` additions
+- `MGA_WORKFLOW_PATH = ".github/workflows/mga-tests.yml"`
+- `MGA_WORKFLOW_YAML` — full workflow definition (runs-on: self-hosted, headless/headed support)
+- `run_mga_via_gha()` — ensures workflow → triggers → polls → returns (exit_code, gha_url)
+- `_find_workflow_by_path()` — checks existing workflows by file path
+- `_ensure_mga_workflow()` — creates YAML if missing
+
+### New routing in `main.py`
+- `POST /api/run-spec` with `branch == "local-mga"` → `_execute_mga_gha_and_update()`
+- Removed `_execute_mga_local_and_update` entirely
+
+### Frontend change
+- MGA badge: `🏢 MGA — local run` → `🏢 MGA — GitHub Actions`
+
+### Config additions
+- `config.py`: `MGA_PLAYWRIGHT_PROJECT_PATH: str = ""`
+- `.env`: `GITHUB_FRAMEWORK_REPO=RajasekharPlay/AI_Automation_MGA`
+
+---
+
+## Session 16 — MGA Workflow Fixes + "No Tests Found" + UI Improvements
+
+### Fix 1: Headed mode on CI crashed (no X server)
+**Problem:** `runs-on: ubuntu-latest` with `--headed` flag → no X server → browser crash.
+**Fix:** Changed workflow to `runs-on: self-hosted` (Windows machine has display natively).
+
+### Fix 2: "No tests found" — wrong branch checkout
+**Problem:** Generated specs live on `ai-playwright-tests` branch. Workflow checkout had no `ref` — always checked out `main`. File not present → "No tests found".
+**Fix:**
+- Added `branch` input to `MGA_WORKFLOW_YAML`:
+  ```yaml
+  branch:
+    description: 'Git branch that contains the spec file'
+    default: 'main'
+  ```
+- Checkout step now uses:
+  ```yaml
+  - uses: actions/checkout@v4
+    with:
+      ref: ${{ github.event.inputs.branch || 'main' }}
+      fetch-depth: 0
+  ```
+- `run_existing_spec_via_gha()` now passes `"branch": branch` in workflow dispatch inputs
+- Updated YAML pushed to GitHub repo (commit `3468453d`)
+
+### Fix 3: npm cache 583MB upload hang
+**Problem:** `actions/setup-node@v4` with `cache: 'npm'` tried to upload 583MB node_modules to GitHub's cache service. Stuck at 0% for 18+ minutes.
+**Fix:** Removed `cache: 'npm'` and `cache-dependency-path` from `actions/setup-node`. Self-hosted runner has `node_modules` persisted on disk between runs anyway.
+
+### Fix 4: Default tags removed — `RunTab.tsx`
+- `tags: ['regression']` → `tags: []`
+- Tags section now starts empty
+
+### Feature: Drag-to-resize splitter in Run Testcase tab
+**File:** `frontend/src/components/RunTab.tsx`
+
+- Added `splitPct` state (default 55 = 55% for logs, 45% for history)
+- Added `isDragging` ref + `useLayoutEffect` with global mousemove/mouseup listeners
+- Right panel is now a flex column with two panes:
+  - **Top pane:** Live Logs card at `height: ${splitPct}%` — terminal fills pane with `flex: 1`
+  - **Drag handle:** 8px div with violet pill indicator, cursor `row-resize`
+  - **Bottom pane:** Execution History card with `flex: 1, minHeight: 0`
+- Removed hardcoded `height: 340` from terminal div — now fully dynamic
+- Execution History `Table` has `scroll={{ x: 900 }}` only (no fixed `y`) — scrolls within its pane
+- Clamp range: 20%–80%
+
+---
+
+## 📊 Current State
 
 | Service | Status | Port |
 |---------|--------|------|
@@ -226,6 +384,7 @@ TypeScript validation (`tsc --noEmit`) is **informational only**.  It must never
 | Frontend (Vite/React) | ✅ Running | 5174 |
 | PostgreSQL | ✅ Running | 5432 |
 | Redis | ✅ Running | 6379 |
+| Self-hosted GH Actions runner | ✅ Online | — |
 
 | Package | Version |
 |---------|---------|
@@ -236,373 +395,272 @@ TypeScript validation (`tsc --noEmit`) is **informational only**.  It must never
 
 ---
 
-## Session 8 — Live Logs & GitHub Actions Fix
+## Session 17 — Multi-Project Support (Generic Platform)
 
-### Problems
-1. **No live logs visible** in Run Testcase tab after clicking Run
-2. **No GitHub Actions workflow** existed in the repo
-3. **Race condition**: background task published Redis messages before WebSocket subscriber connected — all messages were silently lost
-4. **No fallback**: if WebSocket missed logs, there was no recovery path
+### Overview
+Transformed the platform from a single-project (MGA-only) tool into a generic multi-project platform. Users can now create multiple projects (each with its own GitHub repo, credentials, workflow config) and switch between them globally.
 
-### Root Causes & Fixes
+### Backend Changes
 
-#### 1. Race condition — `github_actions_runner.py`
-- Added `await asyncio.sleep(2)` before the first `pub()` call → gives the WebSocket client 2 s to connect and subscribe
-- Changed `pub()` to also `RPUSH` every log line to Redis list `run:{run_id}:log_history` with 24 h TTL → messages persist for late subscribers
+#### `backend/models.py` — New Project model
+- Added `Project` SQLAlchemy model with 20+ fields: name, slug, description, icon_color, github_repo, github_token, ai_tests_branch, workflow_path, playwright_project_path, generated_tests_dir, runner_label, pw_host/testuser/password/email, framework_fetch_paths (JSON), system_prompt_override, jira_url, is_active, timestamps
+- Added nullable `project_id` FK (UUID, indexed) to `TestCase`, `GeneratedScript`, `ExecutionRun`
+- Database migration via direct SQL: `CREATE TABLE projects(...)` + `ALTER TABLE ... ADD COLUMN project_id`
 
-#### 2. History replay — `websocket_manager.py` (`redis_log_subscriber`)
-- Subscribe to pub/sub FIRST (so new messages queue up)
-- Then `LRANGE` the history list and replay all buffered messages to the client
-- If `__DONE__` is already in history (run completed before client connected), return early — don't hang waiting for pub/sub messages that will never come
+#### `backend/main.py` — Project CRUD + project-aware routes
+- New helper functions: `_slugify()`, `_project_to_dict()` (masks secrets), `get_project_config()` (falls back to global .env)
+- New endpoints: `GET/POST /api/projects`, `GET/PUT/DELETE /api/projects/{project_id}`
+- Modified endpoints with optional `project_id` param: `parse-excel`, `test-cases`, `generate-script`, `scripts`, `runs`, `spec-files`, `run-spec`
+- All queries filter by `project_id` when provided; return all data when omitted
 
-#### 3. HTTP fallback endpoint — `main.py`
-- Added `GET /api/runs/{run_id}/logs` → returns Redis list as `{"lines": [...]}` JSON
-- Used as fallback when WebSocket delivers nothing
+#### `backend/seed_projects.py` — Default project seeder
+- Creates MGA and Banorte projects with correct repos, paths, and colors
+- Idempotent: skips if project slug already exists
 
-#### 4. Frontend — `RunTab.tsx`
-- Added `ghaUrl` state — extracts GitHub Actions run URL from log lines with regex
-- Shows **"GitHub Actions Run ↗"** link in the Live Logs card header as soon as URL is detected
-- Added HTTP polling fallback: if WebSocket delivers 0 lines in 6 s, starts polling `/api/runs/{run_id}/logs` every 3 s
-- Poll stops when `__DONE__` is received
+### Frontend Changes
 
-#### 5. GitHub Actions workflow — `QA_Automation_Banorte/.github/workflows/playwright.yml`
-- **Created** `.github/workflows/playwright.yml` in the local `QA_Automation_Banorte` repo
-- Triggers: `workflow_dispatch` (with inputs: `test_file`, `browser`, `environment`) + `push` to `ai-tests-staging` / `ai-generated-tests` branches
-- Uses `ai-{browser}` Playwright projects (matching `playwright.config.ts`)
-- **IMPORTANT**: Must be committed and pushed to `main` branch of the GitHub repo before GHA will trigger
+#### New Files
+| File | Description |
+|------|-------------|
+| `frontend/src/context/ProjectContext.tsx` | React context + provider for global project state. Uses `@tanstack/react-query` with 30s refetch. Persists selection in localStorage. |
+| `frontend/src/components/ProjectSelector.tsx` | Header dropdown to switch projects. Shows colored dots, project names, repo badges. "All Projects" option for unfiltered view. |
+| `frontend/src/components/ProjectsTab.tsx` | Full project management tab. Two-panel layout: project list (left) + collapsible form (right). Sections: General, GitHub, Playwright, Credentials, Advanced. |
 
-### CRITICAL Action Required
-The `.github/workflows/playwright.yml` workflow file must be **committed to the `main` branch** of `RajasekharPlay/QA_Automation_Banorte` on GitHub.  Run from `QA_Automation_Banorte/`:
-```bash
-git add .github/workflows/playwright.yml
-git commit -m "ci: add Playwright workflow with workflow_dispatch trigger"
-git push origin main
-```
-Also add secret `PW_HOST` in GitHub → Settings → Secrets & Variables → Actions → New repository secret.
+#### Modified Files
+| File | Changes |
+|------|---------|
+| `App.tsx` | Wrapped in `ProjectProvider`. Added `ProjectSelector` in header. Added 4th "Projects" tab with `AppstoreOutlined` icon. |
+| `AIPhaseTab.tsx` | Reads `selectedProjectId` from context. Passes to `uploadExcel()` and `createScriptStream()`. Shows active project indicator badge. |
+| `RunTab.tsx` | Reads `selectedProjectId` from context. Passes to `fetchSpecFiles()`, `fetchRuns()`, `runSpec()`. Dynamic project labels instead of hardcoded "MGA". |
+| `Dashboard.tsx` | Reads `selectedProjectId` from context. Passes to `fetchRuns()` and `fetchScripts()`. Stats/charts filter by selected project. |
+| `api/client.ts` | All fetch functions accept optional `projectId` param. New CRUD functions: `fetchProjects`, `createProject`, `updateProject`, `deleteProject`. |
+| `types/index.ts` | Added `Project` interface. Added `project_id?` to `TestCase`, `GeneratedScript`, `ExecutionRun`, `SpecFile`. |
 
-### Import checking
-All required imports (`test`, `expect`, page objects) are handled by safety nets in `main.py` → `_fix_import_paths`, `_fix_page_import_style`, `_ensure_imports_match_usage`. These run BEFORE the script is committed to GitHub.
+### Seeded Projects
+| Project | Slug | Repo | Color |
+|---------|------|------|-------|
+| MGA | mga | RajasekharPlay/AI_Automation_MGA | #f59e0b (amber) |
+| Banorte | banorte | RajasekharPlay/QA_Automation_Banorte | #6366f1 (indigo) |
 
----
-
-## Session 9 — Critical DB Session Bug Fix (generate-script)
-
-### Problem
-All 25 generated scripts in DB had `typescript_code: ""`, `file_path: null`, `validation_status: "pending"`.
-`POST /api/run-test` always rejected: `"Script has not been saved to the framework repo yet"` (HTTP 400).
-No `ExecutionRun` records ever created → live logs blank → no GitHub Actions runs triggered.
-
-### Root Cause — FastAPI StreamingResponse + dependency lifecycle mismatch
-`get_db()` commits the session **when the route handler returns**, not when the streaming response finishes:
-```python
-async def get_db():
-    async with AsyncSessionLocal() as session:
-        yield session
-        await session.commit()   # ← fires when generate_script_endpoint() RETURNS
-```
-`generate_script_endpoint` returns `StreamingResponse(event_stream())` immediately.
-The session was committed & closed BEFORE `event_stream()` body ran.
-The generator's `await db.flush()` operated on a closed session → changes silently discarded.
-
-### Fix — `backend/main.py`
-1. `from database import get_db, init_db, AsyncSessionLocal` — added `AsyncSessionLocal` import
-2. Snapshotted `tc_parsed_json`, `tc_script_num`, `tc_module` from the TC object before returning StreamingResponse (session still valid at that point)
-3. Inside `event_stream()` generator — replaced `await db.flush()` blocks with a dedicated `async with AsyncSessionLocal() as save_db:` block that:
-   - Fetches the script record by ID
-   - Sets `typescript_code`, `file_path`, `validation_status`, `validation_errors`
-   - Adds `UserPrompt` audit record
-   - Calls `await save_db.commit()` — explicit commit in dedicated session
-
-### Rule: Never use the request `db` inside a StreamingResponse generator
-The session is gone by the time the generator runs. Always open `AsyncSessionLocal()` inside the generator for DB writes.
+### Key Design Decisions
+1. **Backward compatible**: All `project_id` fields are nullable — existing data works without migration
+2. **"All Projects" view**: When no project selected, all data is shown (no filtering)
+3. **Per-project config fallback**: If a project doesn't set a field (e.g., github_token), the global `.env` value is used
+4. **Soft delete**: "Delete" sets `is_active=false`, preserving data
+5. **Dark theme**: All new UI matches existing design tokens from `theme.ts`
 
 ---
 
-## Session 10 — Multiple Stale Uvicorn Processes + Dropdown Filter Fix
+## Session 18 — Local + GitHub Actions Run Target Feature
 
-### Problem
-After deploying the Session 9 fix, scripts STILL had `file_path: null` and `typescript_code: ""`.
-Diagnosis: `netstat -ano` showed **4 processes LISTENING on port 8000** — multiple stale uvicorn instances from previous restarts. Old processes (without the Session 9 fix) were handling generate-script requests. The new fixed process was never reached.
+### Overview
+Added the ability to run tests **locally** via `npx playwright test` subprocess OR via **GitHub Actions**, selectable via a dropdown in the Run Testcase tab.
 
-Also: the RunTab dropdown was showing all 26 stale scripts (all with `file_path: null`), making the user think they could run them — but they'd always get "Script has not been saved to the framework repo yet".
+### Backend Changes
 
-### Fix 1 — Kill all processes, start ONE clean instance
-```powershell
-Get-Process -Name 'python','python3','uvicorn' | Stop-Process -Force
-# then start a single new uvicorn
-```
-Verified: only ONE PID listening on port 8000 after restart.
+#### `backend/models.py`
+- Added `run_target` column to `ExecutionRun`: `mapped_column(String(20), default="github_actions")`
+- Values: `"local"` or `"github_actions"`
 
-### Fix 2 — RunTab.tsx dropdown filter updated
-- Changed from `const scripts = allScripts` (show everything)
-- To `const scripts = allScripts.filter((s) => s.file_path != null && s.file_path !== '')`
-- Stale scripts with `file_path: null` are hidden
-- Only scripts that were FULLY generated (file saved to disk, DB committed) appear in the dropdown
-- Placeholder: `'No ready scripts — go to AI Phase tab and generate one'`
+#### `backend/_migrate_run_target.py` (NEW)
+- One-time migration: `ALTER TABLE execution_runs ADD COLUMN IF NOT EXISTS run_target VARCHAR(20) DEFAULT 'github_actions' NOT NULL`
 
-### Rule: Always start uvicorn with `--reload` from a single terminal
-Never run `Start-Process` multiple times without killing the previous process first.
-Safest restart command:
-```powershell
-Get-Process -Name 'python','uvicorn' -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep 2
-Start-Process uvicorn.exe ... -WindowStyle Normal
-```
+#### `backend/execution_engine.py` — Local execution support
+- `_resolve_playwright_project(browser)` — maps browser to Playwright `--project=` name (e.g., `chromium` → `ai-chromium`)
+- `_local_sync_worker(spec_path, project_dir, browser, env, device, execution_mode, env_vars, msg_q)` — sync background thread:
+  - `subprocess.Popen(npx playwright test ...)` with streaming stdout → queue
+  - Sets env vars: `pw_HOST`, `pw_TESTUSER`, `pw_PASSWORD`, `pw_EMAIL`, `CI=true`
+  - Posts `("log", line)`, `("done", exit_code)`, or `("error", msg)` to queue
+- `run_test_locally(run_id, spec_file_path, project_dir, ...)` — async wrapper:
+  - Creates Redis pub/sub channel, spawns worker thread, drains queue in async loop
+  - Same log streaming pattern as GitHub Actions (Redis pub/sub + history list)
 
----
-
-## Session 11 — Race Condition #2 Fix: `asyncio.create_task()` before DB commit
-
-### Problem
-After Sessions 9 & 10 fixes, scripts now saved correctly (`file_path` populated, dropdown working).
-But clicking Run Test still produced:
-- **Zero output from `github_actions_runner`** — not even "Starting GitHub Actions runner…"
-- **No GitHub Actions workflow runs** triggered
-- **Live logs completely blank** (both WebSocket and HTTP polling returned empty)
-
-The backend DID log:
-```
-INFO: POST /api/run-test HTTP/1.1 → 200 OK
-```
-And WebSocket DID connect successfully. But `_execute_and_update` was silently returning with no work done.
-
-### Root Cause — `asyncio.create_task()` started before `get_db` committed
-
-`run_test_endpoint` used the FastAPI `get_db` dependency:
-```python
-async def run_test_endpoint(... db: AsyncSession = Depends(get_db)):
-    run = ExecutionRun(...)
-    db.add(run)
-    await db.flush()          # SQL INSERT sent, but NOT committed (still in transaction)
-    run_id = str(run.id)
-
-    asyncio.create_task(      # ← task starts IMMEDIATELY as a background coroutine
-        _execute_and_update(run_id, ...)
-    )
-    return {"run_id": run_id}  # ← ONLY NOW does get_db commit the transaction
-```
-
-`get_db` commits **when the route handler returns**, not when `flush()` is called.
-`asyncio.create_task()` schedules `_execute_and_update` to start immediately — potentially BEFORE `return` releases control back to `get_db`.
-
-Inside `_execute_and_update`:
-```python
-async with AsyncSessionLocal() as db:
-    run = await db.get(ExecutionRun, uuid.UUID(run_id))
-    if not run:
-        return   # ← SILENT EARLY EXIT — run record not committed yet → returns None
-```
-
-The `db.get()` opened a new connection and looked up the `run_id` UUID — which didn't exist in the DB yet (transaction not committed). So `run` was `None`, and the function returned silently, taking `github_actions_runner` with it. Nothing ever happened.
-
-### Fix — `backend/main.py` in `run_test_endpoint`
-
-Added explicit `await db.commit()` **before** `asyncio.create_task()`:
-```python
-db.add(run)
-await db.flush()
-run_id = str(run.id)
-
-# ── CRITICAL: commit BEFORE spawning background task ──────────────────────
-# _execute_and_update opens its own AsyncSessionLocal and does db.get(run_id).
-# If the run record isn't visible (not committed), it returns None → silent exit
-# → run_test_via_github_actions is never called → no logs, no GHA trigger.
-await db.commit()
-
-asyncio.create_task(
-    _execute_and_update(run_id, ...)
-)
-return {"run_id": run_id, "status": "queued"}
-```
-
-### Rule: Always `await db.commit()` explicitly before `create_task()` when using `get_db`
-`get_db`'s auto-commit fires at `return`. Background tasks spawned before `return` may read from a fresh DB connection that sees only committed data. Never rely on the teardown commit to happen before the task reads the record.
-
----
-
-## Session 12 — GHA "Project ai-chromium not found" Fix
-
-### Problem
-GitHub Actions workflow failed with:
-```
-Error: Project(s) "ai-chromium" not found.
-Available projects: "setup-auth", "setup-api", "setup-global", "Mobile Chrome"
-```
-
-### Root Cause — Two separate issues
-
-#### Issue 1: `playwright.config.ts` never pushed to GitHub
-The `ai-chromium` (and other `ai-*`) projects were added to the LOCAL
-`playwright.config.ts` but never committed to Git.
-
-**Fix:** Committed and pushed `skye-e2e-tests/playwright.config.ts` to `main`:
-```bash
-git add skye-e2e-tests/playwright.config.ts
-git commit -m "ci: add ai-* Playwright projects for AI test automation platform"
-git push origin main
-```
-
-#### Issue 2: `ai-tests-staging` uses OLD workflow YAML + OLD `playwright.config.ts`
-`workflow_dispatch` with `ref: ai-tests-staging` causes GitHub to use the workflow
-YAML from `ai-tests-staging` (old version) AND checkout `ai-tests-staging`
-(has old `playwright.config.ts` without ai-* projects).
-
-`ai-tests-staging` was forked from `main` BEFORE the config was updated → permanently
-stale unless explicitly updated.
-
-**Fix 1 — `playwright.yml` (on `main`):**
-- Checkout step now hardcodes `ref: ai-tests-staging` + `fetch-depth: 0`
-- Added "Sync playwright.config.ts from main" step:
-  ```bash
-  git fetch origin main --depth=1
-  git checkout origin/main -- playwright.config.ts
+#### `backend/main.py` — Run target routing
+- `run_spec_endpoint()` now accepts `run_target: str = Form(default="github_actions")`
+- Routing logic:
+  ```python
+  if run_target == "local":       → _execute_local_and_update()
+  elif branch == "local-mga":     → _execute_mga_gha_and_update()
+  else:                           → _execute_spec_and_update()
   ```
-- Removed `push` trigger (use `workflow_dispatch` only)
+- Added `_execute_local_and_update()` helper function
+- Added `"run_target": r.run_target` to all run serialization dicts
 
-**Fix 2 — `github_actions_runner.py`:**
-Changed trigger ref from `STAGING_BRANCH` to `"main"` so GHA uses the FIXED YAML:
-```python
-TRIGGER_BRANCH = "main"
-await _trigger_workflow(client, workflow_id, TRIGGER_BRANCH, inputs)
-conclusion, github_run_url = await _wait_for_run(
-    client, workflow_id, TRIGGER_BRANCH, triggered_at, run_id, r
-)
-```
-The YAML on `main` hardcodes `ref: ai-tests-staging` in checkout, so the spec file
-is always found regardless of which ref triggered the dispatch.
+### Frontend Changes
 
-### Final flow (after fix):
-1. `github_actions_runner` commits spec to `ai-tests-staging`
-2. Triggers `workflow_dispatch` on `main` → GHA uses FIXED YAML from `main`
-3. YAML: checkout `ai-tests-staging` (spec file) + sync `playwright.config.ts` from `main` (ai-* projects)
-4. `npx playwright test --project=ai-chromium` → ✅ project found, tests run
+#### `frontend/src/types/index.ts`
+- Added `run_target?: string` to `RunParams` and `ExecutionRun` interfaces
+
+#### `frontend/src/api/client.ts`
+- Added `run_target` to `runSpec()` params type
+
+#### `frontend/src/components/RunTab.tsx`
+- Added **Run Target** dropdown (`Local Machine` / `GitHub Actions`) in Execution Parameters card
+- Removed "Will run in headless/headed mode" confirmation badge
+- Updated `handleRun` payload to include `run_target`
+- Added **Target** column to execution history table
 
 ---
 
-## Session 13 — Push-Trigger Re-Triggers Old Workflow + Log Streaming Fix
+## Session 19 — Spec Files Not Found Fix
 
-### Problem 1 — `ai-chromium not found` recurring (push trigger)
-When we pushed the networkidle fix to `ai-tests-staging`, the OLD `playwright.yml`
-on that branch had a `push:` trigger → GitHub triggered a run using the old workflow
-(no playwright.config.ts sync, no ai-* projects). Also `test_file` was empty because
-push-triggered runs don't pass workflow_dispatch inputs → "Running all generated tests"
-with "ai-chromium not found".
+### Problem
+RunTab showed "No spec files found" for MGA project. `list_spec_files_from_branch()` was called with `repo` and `token` kwargs but didn't accept them.
 
-**Fix:** Copied the updated `playwright.yml` from `main` to `ai-tests-staging` and pushed.
-Now both branches have the same workflow YAML (no push trigger, sync step included).
-
-### Problem 2 — In-progress GHA logs not showing in UI (HTTP fallback)
-`_wait_for_run()` used `r.publish(channel, msg)` directly — bypassing the `pub()`
-helper that also writes to `run:{run_id}:log_history` Redis list. HTTP polling fallback
-calls `GET /api/runs/{run_id}/logs` which reads that list. So the HTTP fallback
-(used when WebSocket falls back) was only seeing the initial messages, not the
-every-10-second in-progress status updates.
-
-**Fix — `backend/github_actions_runner.py`:**
-- Refactored `_wait_for_run()` to accept `pub` as a parameter (async callable)
-- All `r.publish()` calls inside replaced with `await pub()` — now go to BOTH pub/sub AND history list
-- Poll interval reduced from 10s → 5s for faster UI updates
-- Only publishes a status line when the status CHANGES (deduplication, avoids spam)
-
+### Fix
+Updated `github_actions_runner.py` → `list_spec_files_from_branch()` signature:
 ```python
-# _wait_for_run now accepts pub callable
-async def _wait_for_run(client, workflow_id, branch, triggered_after, pub, timeout_s=900):
-    ...
-    await pub(f"⏳ GHA status: {status_line} | elapsed={elapsed}s")  # ← uses pub(), not r.publish()
-
-# Call site passes pub directly
-conclusion, github_run_url = await _wait_for_run(
-    client, workflow_id, TRIGGER_BRANCH, triggered_at, pub  # ← no more run_id/r args
-)
+async def list_spec_files_from_branch(
+    branch: str | None = None,
+    *,
+    repo: str | None = None,
+    token: str | None = None,
+) -> list[dict]:
 ```
-
-### Problem 3 — `page.goto()` without networkidle causes "browser closed"
-Banorte app does a JS redirect after the initial load event. Without `networkidle`,
-the page context closes before Step 2 can interact.
-
-**Fixes:**
-- `llm_orchestrator.py` SYSTEM_PROMPT Rule 6: now MANDATES `{ waitUntil: 'networkidle' }`
-- Both few-shot examples updated with networkidle
-- Existing RB001 spec patched: `git push` to `ai-tests-staging` + DB UPDATE
-- DB record updated via psql:
-  ```sql
-  UPDATE generated_scripts
-  SET typescript_code = REPLACE(typescript_code,
-    'await page.goto(process.env.pw_HOST!);',
-    'await page.goto(process.env.pw_HOST!, { waitUntil: ''networkidle'' });')
-  WHERE typescript_code LIKE '%page.goto(process.env.pw_HOST!)%';
-  ```
+Falls back to `_repo()` and `_headers()` when params are `None`.
 
 ---
 
-## Session 14 — Spec Files Dropdown + GitHub Actions Integration
+## Session 20 — Dark Mode / Light Mode Toggle
 
-### Feature: Run spec files from GitHub branch via dropdown
+### Overview
+Added a dark/light theme toggle to the UI. Click the sun/moon icon in the header to switch themes. Preference is persisted in `localStorage`.
 
-#### 1. New branch `ai-playwright-tests` created
-- Branch created in `RajasekharPlay/QA_Automation_Banorte` via GitHub API
-- AI-generated spec files are now committed to this branch automatically
-- Branch created from `main` HEAD
+### Approach: CSS Variables + React Context + Ant Design Algorithm
+All colors flow through CSS custom properties. Components import `colors` from `theme.ts` which now returns `var(--xxx)` references — **zero changes needed in component files**.
 
-#### 2. Backend: New endpoints
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/spec-files` | Lists all .spec.ts files from `ai-playwright-tests` branch (+ staging/results) |
-| POST | `/api/run-spec` | Run an existing spec file by path via GitHub Actions |
-| POST | `/api/ensure-branch` | Create `ai-playwright-tests` branch if it doesn't exist |
+### New Files
 
-#### 3. Backend: `github_actions_runner.py` — new functions
-- `list_spec_files_from_branch(branch)` — Uses GitHub recursive tree API to find .spec.ts files
-- `ensure_ai_tests_branch()` — Creates `ai-playwright-tests` branch if needed
-- `commit_spec_to_ai_branch(spec_filename, code)` — Commits spec to AI tests branch
-- `run_existing_spec_via_gha(run_id, spec_path, branch, ...)` — Triggers GHA for existing files (no commit needed)
+#### `frontend/src/context/ThemeContext.tsx`
+- React context: `mode` (`'dark'` | `'light'`), `isDark`, `toggleTheme()`
+- Persists to `localStorage` key `ai-sdet-theme`
+- Sets `data-theme` attribute on `<html>` element
+- Default: `'dark'`
 
-#### 4. Backend: `config.py` — new setting
-- `AI_TESTS_BRANCH: str = "ai-playwright-tests"` — branch where AI-generated specs live
+### Modified Files
 
-#### 5. Database: `execution_runs` table changes
-- `script_id` → nullable (was NOT NULL) — allows running specs without DB script records
-- Added `spec_file_path VARCHAR(500)` — GitHub path of the spec file being run
-- Added `spec_branch VARCHAR(200)` — branch the spec was run from
-- Migration applied via direct ALTER TABLE (no alembic)
+#### `frontend/src/theme.ts` — Rewritten
+- `colors` object: all background/border/text values now use CSS variable references (`var(--bg-card)`, `var(--text-primary)`, etc.)
+- Accent/status colors remain static (work on both backgrounds)
+- `gradients.header` and `gradients.surface` now use CSS vars
+- New exports: `getAntThemeTokens(mode)` and `getAntComponentTokens(mode)` — return mode-appropriate Ant Design v5 tokens
+- Legacy exports `antThemeTokens`/`antComponentTokens` kept for backward compat
 
-#### 6. AI generation flow updated
-- `generate_script_endpoint` now also commits generated specs to `ai-playwright-tests` branch
-- Spec files are available in the Run tab dropdown immediately after generation
+#### `frontend/src/index.css` — Rewritten
+- **40+ CSS custom properties** defined in two blocks:
+  - `:root, [data-theme="dark"]` — deep navy dark palette (existing look preserved)
+  - `[data-theme="light"]` — clean white/light gray palette
+- All hardcoded hex values replaced with `var(--xxx)` references
+- Added smooth transitions: `transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease`
+- Added `.theme-toggle-btn` class with hover glow effect
+- Added `[data-theme="light"]` overrides for header, table headers, popovers
 
-#### 7. Frontend: `RunTab.tsx` completely rewritten
-- **Old:** Selected scripts from DB (generated_scripts table) by script_id
-- **New:** Selects spec files from GitHub branch via `/api/spec-files` dropdown
-- Each dropdown item shows: filename + branch tag
-- Refresh button to re-fetch spec files from GitHub
-- Empty state when no spec files exist
-- Execution params: Environment, Browser, Device, Mode, Tags (unchanged)
-- Run button calls `POST /api/run-spec` with spec file path + branch
-- Live logs via WebSocket + HTTP polling fallback (unchanged)
-- Execution history table shows spec_file_path instead of script_id
+#### `frontend/src/App.tsx`
+- Imported `ThemeProvider` and `useThemeContext` from `context/ThemeContext`
+- Extracted inner `AppContent` component that reads `useThemeContext()` for current mode
+- `<ConfigProvider>` now conditionally uses `theme.darkAlgorithm` or `theme.defaultAlgorithm`
+- Theme tokens passed via `getAntThemeTokens(mode)` and `getAntComponentTokens(mode)`
+- Added **theme toggle button** (sun/moon icon) in header, next to version pill
+- Wrapper order: `QueryClientProvider > ThemeProvider > ProjectProvider > AppContent`
 
-#### 8. Frontend: `api/client.ts` — new functions
-- `fetchSpecFiles(branch?)` — GET /api/spec-files
-- `runSpec(params)` — POST /api/run-spec
-- `ensureBranch()` — POST /api/ensure-branch
+### Key Design Decisions
+1. **CSS variable approach** — component files (`Dashboard.tsx`, `AIPhaseTab.tsx`, `RunTab.tsx`, `ProjectsTab.tsx`, `ProjectSelector.tsx`) needed **zero changes**
+2. **Terminal stays dark** in both modes for readability (`--terminal-bg: #1e293b` in light mode)
+3. **Accent colors static** — indigo, violet, emerald, amber work on both backgrounds
+4. **Ant Design algorithm** — properly switches all built-in component styles (tables, selects, buttons, tags, cards)
 
-#### 9. Frontend: `types/index.ts` — new types
-- `SpecFile` interface: name, path, sha, size, branch
-- `ExecutionRun` updated: script_id optional, added spec_file_path, spec_branch
+### Verification
+- Dark mode: loads exactly as before (preserved existing look)
+- Light mode: all backgrounds white/light gray, text dark, cards clean
+- Toggle: instant switch via CSS variables + Ant Design algorithm
+- Persistence: refreshing page preserves theme choice
+- All 4 tabs tested in both modes via Chrome preview
 
-### Key Flow (after this session):
-1. **AI Phase tab:** Generate script → saved locally + committed to `ai-playwright-tests` branch
-2. **Run tab:** Dropdown lists all .spec.ts files from `ai-playwright-tests` branch
-3. **Select spec** → configure browser/device/env/mode → click Run
-4. **Backend:** Verifies file exists on branch → triggers `workflow_dispatch` on `main`
-5. **GitHub Actions:** Runs the test with configured parameters
-6. **Live logs:** Stream via WebSocket → show progress + GHA link
+---
+
+## 📊 Current State
+
+| Service | Status | Port |
+|---------|--------|------|
+| Backend (FastAPI/uvicorn) | Running | 8000 |
+| Frontend (Vite/React) | Running | 5174 |
+| PostgreSQL | Running | 5432 |
+| Redis | Running | 6379 |
+| Self-hosted GH Actions runner | Online | — |
+
+| Package | Version |
+|---------|---------|
+| anthropic | 0.84.0 |
+| google-generativeai | 0.8.6 |
+| fastapi | 0.111.0 |
+| uvicorn | 0.30.1 |
+
+---
+
+## Session 21 — Hybrid Playwright MCP Architecture Planning
+
+### Overview
+Discussed and planned the next major feature: integrating **Playwright MCP** (Model Context Protocol) into the platform for AI-driven browser exploration and smarter script generation.
+
+### Decision: Hybrid Approach (Playwright MCP + Existing LLM Pipeline)
+
+The hybrid pipeline combines:
+1. **Playwright MCP** (`@playwright/mcp`) → AI browses the live app, observes DOM structure, extracts locators
+2. **LLM Platform** (existing `llm_orchestrator.py`) → Applies `skye-e2e-tests` framework conventions (fixtures, steps, assertions)
+3. **Playwright CLI** (`npx playwright codegen`) → Used only to quickly grab tricky locators when needed
+4. **Script Validator** (existing `script_validator.py`) → `tsc --noEmit` confirms TypeScript validity
+5. **Execution Engine** (existing) → Runs the final spec locally or via GitHub Actions
+
+### Why Playwright MCP over Playwright CLI?
+- **CLI (`codegen`)**: Records manual actions → raw code without framework conventions. Needs manual refactoring.
+- **MCP**: AI sees live DOM → generates convention-compliant scripts with `fixtures`, `test.step()`, `skye`/`banorte` objects automatically.
+
+### Tools Required
+| Tool | Package | Purpose | Status |
+|------|---------|---------|--------|
+| Playwright MCP | `@playwright/mcp` (npm) | Browser automation via MCP protocol | 🆕 To install |
+| Playwright Python | `playwright` (pip) | Backend browser control | 🆕 To install |
+| New API routes | `/api/mcp-browse`, `/api/mcp-snapshot` | Orchestrate browser sessions | 🆕 To build |
+| AI Browser Tab | `AIBrowserTab.tsx` | Frontend UI for browser exploration | 🆕 To build |
+| LLM Orchestrator | `llm_orchestrator.py` | Enhanced to accept MCP context | ✅ To enhance |
+
+### Architecture
+```
+┌─────────────────────────────────────────────┐
+│           HYBRID PIPELINE                   │
+├─────────────────────────────────────────────┤
+│  🆕 Playwright MCP (@playwright/mcp)        │  ← NEW
+│       ↓ browses app, extracts DOM           │
+│  🆕 AI Browser Tab (frontend)               │  ← NEW
+│       ↓ shows snapshots + locators          │
+│  🆕 MCP Backend Routes (main.py)            │  ← NEW
+│       ↓ orchestrates browser session        │
+│  ✅ LLM Orchestrator (existing)             │  ← ENHANCED
+│       ↓ generates .spec.ts                  │
+│  ✅ Script Validator (existing)             │  ← NO CHANGE
+│  ✅ Execution Engine (existing)             │  ← NO CHANGE
+└─────────────────────────────────────────────┘
+```
+
+### Implementation Status
+- [x] Architecture decided (hybrid MCP + LLM)
+- [x] Tools identified (`@playwright/mcp`, `playwright` Python)
+- [ ] Detailed implementation plan (pending approval)
+- [ ] Backend: MCP browser session management
+- [ ] Backend: New API routes for browse/snapshot/generate
+- [ ] Frontend: AI Browser tab with live snapshot viewer
+- [ ] LLM prompt enhancement with MCP context
+- [ ] Integration testing
 
 ---
 
 ## 🔜 Future Improvements (Not Yet Done)
 
+- [ ] **Playwright MCP integration** — AI-driven browser exploration + script generation (Session 21 plan)
 - [ ] Self-correction loop: if `tsc --noEmit` fails, re-prompt LLM with error to fix it
 - [ ] Dashboard: real-time run status polling
 - [ ] Support multiple Excel sheets in one upload
 - [ ] Token usage tracking dashboard (compare Anthropic vs Gemini cost)
+- [ ] Install self-hosted runner as Windows service (requires admin PowerShell: `.\svc.cmd install`)
+- [ ] Parameterize `framework_loader.py`, `llm_orchestrator.py` for per-project config
+- [ ] Extra Instructions field — verify it flows through to LLM prompt properly

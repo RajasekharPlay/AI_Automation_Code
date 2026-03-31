@@ -7,27 +7,30 @@
 ## 📌 Project Overview
 
 **Name:** AI Test Automation Platform
-**Location:** `C:\Users\RajasekharUdumula\Desktop\ai-test-platform\`
-**Purpose:** Upload Excel test cases → AI generates Playwright/TypeScript scripts → Execute tests → View Allure reports
-**Framework target:** `QA_Automation_Banorte` / `skye-e2e-tests` (Banorte insurance company)
+**Location:** `C:\Users\RajasekharUdumula\Desktop\AI_Automation_Code\`
+**Purpose:** Upload Excel test cases → AI generates Playwright/TypeScript scripts → Execute tests locally or via GitHub Actions → View results
+**Framework targets:**
+- `RajasekharPlay/QA_Automation_Banorte` — Banorte (`skye-e2e-tests/`)
+- `RajasekharPlay/AI_Automation_MGA` — MGA (`skye-e2e-tests/`)
 
 ---
 
 ## 🗂 Project Structure
 
 ```
-ai-test-platform/
+AI_Automation_Code/
 ├── backend/                         # FastAPI Python backend
 │   ├── main.py                      # All API routes
 │   ├── config.py                    # Settings loaded from .env (absolute path)
 │   ├── database.py                  # SQLAlchemy async + AsyncSessionLocal
-│   ├── models.py                    # TestCase, GeneratedScript, ExecutionRun, UserPrompt
+│   ├── models.py                    # TestCase, GeneratedScript, ExecutionRun, UserPrompt, Project
 │   ├── excel_parser.py              # Parses .xlsx → TestCase objects
 │   ├── framework_loader.py          # GitHub API → fetches skye-e2e-tests/ files → Redis cache
 │   ├── llm_orchestrator.py          # Multi-provider: Anthropic Claude + Google Gemini
 │   ├── claude_orchestrator.py       # Legacy (superseded by llm_orchestrator.py)
 │   ├── script_validator.py          # tsc --noEmit validation + self-correction
-│   ├── execution_engine.py          # npx playwright test subprocess + Allure
+│   ├── execution_engine.py          # Local npx playwright test + Allure + run_test_locally()
+│   ├── github_actions_runner.py     # GitHub Actions orchestration for MGA + Banorte
 │   ├── websocket_manager.py         # WebSocket + Redis pub/sub bridge
 │   ├── requirements.txt             # Python dependencies
 │   ├── .env                         # Real secrets (NOT committed)
@@ -36,13 +39,19 @@ ai-test-platform/
 │
 ├── frontend/                        # React + TypeScript + Ant Design + Vite
 │   ├── src/
-│   │   ├── App.tsx                  # 3-tab dark layout: AI Phase / Run Testcase / Dashboard
+│   │   ├── App.tsx                  # 5-tab layout with dark/light toggle: Dashboard / AI Phase / Run Testcase / AI Browser / Projects
 │   │   ├── api/client.ts            # All API calls (relative URLs via Vite proxy)
-│   │   ├── types/index.ts           # TypeScript interfaces
+│   │   ├── types/index.ts           # TypeScript interfaces (incl. Project)
+│   │   ├── theme.ts                 # Centralized design tokens — CSS variable refs + mode-aware Ant tokens
+│   │   ├── context/
+│   │   │   ├── ProjectContext.tsx   # React context for global project selection
+│   │   │   └── ThemeContext.tsx     # React context for dark/light mode (localStorage persisted)
 │   │   └── components/
 │   │       ├── AIPhaseTab.tsx       # LLM provider toggle + upload + generate + Monaco editor
-│   │       ├── RunTab.tsx           # Script select + env/browser config + live logs
-│   │       └── Dashboard.tsx        # Stats, pie chart, run history, Allure embed
+│   │       ├── RunTab.tsx           # Spec select + env/browser config + live logs + drag splitter
+│   │       ├── Dashboard.tsx        # Stats, pie chart, run history, Allure embed
+│   │       ├── ProjectsTab.tsx      # Project CRUD — two-panel with list + collapsible form
+│   │       └── ProjectSelector.tsx  # Header dropdown to switch active project
 │   ├── vite.config.ts               # Port 5174 (strictPort), proxy /api → :8000, /ws → ws://:8000
 │   └── package.json
 │
@@ -57,22 +66,36 @@ ai-test-platform/
 
 ### Backend (FastAPI on port 8000)
 ```powershell
-# Method 1 — PowerShell (recommended, opens new window)
-Start-Process -FilePath 'C:\Users\RajasekharUdumula\Desktop\ai-test-platform\backend\venv\Scripts\uvicorn.exe' `
-  -ArgumentList 'main:app','--host','127.0.0.1','--port','8000','--reload' `
-  -WorkingDirectory 'C:\Users\RajasekharUdumula\Desktop\ai-test-platform\backend' `
-  -WindowStyle Normal
+# Kill any old processes first
+Get-Process -Name 'python','uvicorn' -ErrorAction SilentlyContinue | Stop-Process -Force
 
-# Method 2 — CMD window (run from backend/ directory)
-cd C:\Users\RajasekharUdumula\Desktop\ai-test-platform\backend
-venv\Scripts\uvicorn.exe main:app --host 127.0.0.1 --port 8000 --reload
+# Start fresh
+Start-Process -FilePath 'C:\Users\RajasekharUdumula\Desktop\AI_Automation_Code\backend\venv\Scripts\python.exe' `
+  -ArgumentList '-m','uvicorn','main:app','--host','127.0.0.1','--port','8000','--reload' `
+  -WorkingDirectory 'C:\Users\RajasekharUdumula\Desktop\AI_Automation_Code\backend' `
+  -WindowStyle Normal
 ```
 
 ### Frontend (Vite on port 5174)
 ```bash
-cd C:\Users\RajasekharUdumula\Desktop\ai-test-platform\frontend
+cd C:\Users\RajasekharUdumula\Desktop\AI_Automation_Code\frontend
 npm run dev
 ```
+
+### Self-Hosted GitHub Actions Runner (REQUIRED for MGA tests)
+```powershell
+# Runner lives at C:\actions-runner
+# Start it (must stay open while running CI jobs)
+Start-Process -FilePath 'C:\actions-runner\run.cmd' -WorkingDirectory 'C:\actions-runner' -WindowStyle Normal
+
+# To install as a Windows service (run PowerShell as Administrator)
+cd C:\actions-runner
+.\svc.cmd install
+.\svc.cmd start
+```
+
+> ⚠️ The runner must be **online** before triggering MGA test runs.
+> Check status: GitHub → `RajasekharPlay/AI_Automation_MGA` → Settings → Actions → Runners
 
 ### Health check
 ```
@@ -85,7 +108,7 @@ API docs: http://127.0.0.1:8000/docs
 
 ## ⚙️ Environment Variables (.env)
 
-File: `C:\Users\RajasekharUdumula\Desktop\ai-test-platform\backend\.env`
+File: `C:\Users\RajasekharUdumula\Desktop\AI_Automation_Code\backend\.env`
 
 ```env
 # LLM Provider — "anthropic" or "gemini"
@@ -99,9 +122,9 @@ ANTHROPIC_MODEL=claude-opus-4-5
 GEMINI_API_KEY=AIzaSyxxxxx                     # Get from aistudio.google.com
 GEMINI_MODEL=gemini-2.5-pro
 
-# GitHub (for fetching framework context)
+# GitHub (for fetching framework context + triggering GHA)
 GITHUB_TOKEN=ghp_xxxxx
-GITHUB_FRAMEWORK_REPO=RajasekharPlay/QA_Automation_Banorte
+GITHUB_FRAMEWORK_REPO=RajasekharPlay/AI_Automation_MGA   # MGA repo
 
 # PostgreSQL
 DATABASE_URL=postgresql+asyncpg://postgres:Sreeram@localhost:5432/ai_test_platform
@@ -110,17 +133,21 @@ SYNC_DATABASE_URL=postgresql://postgres:Sreeram@localhost:5432/ai_test_platform
 # Redis
 REDIS_URL=redis://localhost:6379/0
 
-# Framework Playwright project path (skye-e2e-tests SUBFOLDER — not repo root)
+# Framework Playwright project paths
 PLAYWRIGHT_PROJECT_PATH=C:/Users/RajasekharUdumula/Desktop/QA_Automation_Banorte/skye-e2e-tests
+MGA_PLAYWRIGHT_PROJECT_PATH=C:/Users/RajasekharUdumula/Desktop/AI_Automation_Code/AI_Automation_MGA/skye-e2e-tests
 GENERATED_TESTS_DIR=tests/generated
+
+# Branch for AI-generated specs
+AI_TESTS_BRANCH=ai-playwright-tests
 
 # App
 FRONTEND_URL=http://localhost:5174
 SECRET_KEY=banorte-ai-platform-secret-2024
 ```
 
-> ⚠️ CRITICAL: `PLAYWRIGHT_PROJECT_PATH` must point to the `skye-e2e-tests/` **subfolder**, NOT the repo root.
 > ⚠️ CRITICAL: `config.py` uses `Path(__file__).resolve().parent / ".env"` — absolute path, no CWD dependency.
+> ⚠️ CRITICAL: `env_ignore_empty=True` in `model_config` — prevents empty OS env vars from overriding `.env`.
 
 ---
 
@@ -135,12 +162,6 @@ SECRET_KEY=banorte-ai-platform-secret-2024
 - Lazy client init: `_get_anthropic()` and `_ensure_gemini()` — safe to have only one key configured
 - `active_provider_info()` → used by `GET /api/llm-provider` endpoint
 
-**Message format differences:**
-| | Anthropic | Gemini |
-|---|---|---|
-| AI role | `"assistant"` | `"model"` |
-| Content | `"content": "text"` | `"parts": ["text"]` |
-
 ---
 
 ## 🌐 API Routes
@@ -154,12 +175,42 @@ SECRET_KEY=banorte-ai-platform-secret-2024
 | POST | `/api/generate-script` | SSE stream: generates TypeScript from test case |
 | GET | `/api/scripts` | List all generated scripts |
 | GET | `/api/scripts/{id}` | Single script detail |
-| POST | `/api/run-test` | Enqueue test execution → returns run_id |
+| GET | `/api/spec-files` | List .spec.ts files from GitHub branch |
+| POST | `/api/run-spec` | Run spec locally or via GitHub Actions (run_target param) |
+| POST | `/api/ensure-branch` | Create AI tests branch if missing |
 | GET | `/api/runs` | List all execution runs |
 | GET | `/api/runs/{id}` | Single run detail |
+| GET | `/api/runs/{id}/logs` | HTTP fallback log fetch from Redis |
 | GET | `/api/reports/{id}` | Serve Allure HTML report |
 | POST | `/api/framework/refresh` | Re-fetch framework from GitHub |
 | WS | `/ws/run/{run_id}` | Live log stream |
+| GET | `/api/projects` | List all active projects |
+| POST | `/api/projects` | Create a new project (JSON body) |
+| GET | `/api/projects/{id}` | Get single project |
+| PUT | `/api/projects/{id}` | Update project (JSON body) |
+| DELETE | `/api/projects/{id}` | Soft-delete (sets is_active=false) |
+
+> **Multi-project filtering**: Routes that accept `project_id` (query param or Form field):
+> `parse-excel`, `test-cases`, `generate-script`, `scripts`, `runs`, `spec-files`, `run-spec`.
+> When `project_id` is provided, results are filtered. When omitted, all data is returned.
+
+---
+
+## 🏗 Multi-Project Architecture
+
+The platform is **generic** — not tied to any single project. Each project has its own:
+- GitHub repo, token, branch, workflow path
+- Playwright project path, generated tests directory
+- Runner label, app credentials (host/user/password/email)
+- Optional custom LLM system prompt override
+
+**DB Model:** `projects` table with UUID PK. `TestCase`, `GeneratedScript`, `ExecutionRun` each have nullable `project_id` FK.
+
+**Frontend:** `ProjectContext` (React Context) provides `selectedProjectId` globally. `ProjectSelector` in header switches projects. All tabs read from context and pass `project_id` to API calls.
+
+**Config fallback:** `get_project_config()` in `main.py` loads project-specific settings. If a field is empty, falls back to global `.env` values.
+
+**Seeded projects:** MGA (#f59e0b) and Banorte (#6366f1) — run `python seed_projects.py` from backend/.
 
 ---
 
@@ -184,8 +235,8 @@ async ({ page, skye, banorte }) => {
 new PetsPage(page, skye)   // TWO args
 new MainPage(page)          // ONE arg
 
-// Navigation
-await page.goto(process.env.pw_HOST!);
+// Navigation — ALWAYS with networkidle
+await page.goto(process.env.pw_HOST!, { waitUntil: 'networkidle' });
 
 // Steps — every logical step wrapped
 await test.step('Step 1: Navigate', async () => { ... });
@@ -198,58 +249,116 @@ await expect(locator).toBeVisible();
 
 ---
 
-## 📁 Framework GitHub Paths Fetched
+## 🎯 GitHub Actions — MGA Tests (`github_actions_runner.py`)
 
-**Repo:** `RajasekharPlay/QA_Automation_Banorte`
-**Paths fetched** (in `framework_loader.py`):
-- `skye-e2e-tests/fixtures/`
-- `skye-e2e-tests/pages/`
-- `skye-e2e-tests/custom/`
-- `skye-e2e-tests/utils/`
+**Workflow file:** `.github/workflows/mga-tests.yml` on `main` branch of `RajasekharPlay/AI_Automation_MGA`
+**Runs on:** `self-hosted` runner (user's Windows machine at `C:\actions-runner`)
 
----
+### Why self-hosted?
+The MGA test app (`skye1.dev.mga.innoveo-skye.net`) is on a private/internal network — not accessible from GitHub's cloud runners.
 
-## 🎯 Playwright Projects (ai-test-platform generated tests)
+### Workflow inputs
+| Input | Description |
+|-------|-------------|
+| `test_file` | Spec file path relative to `skye-e2e-tests/` |
+| `branch` | Git branch that contains the spec file |
+| `browser` | chromium/firefox/webkit |
+| `environment` | dev/sit/uat |
+| `execution_mode` | headless/headed |
+| `pw_host` | App URL |
+| `pw_testuser` | Login username |
+| `pw_password` | Login password |
+| `pw_email` | Login email |
 
-Added to `skye-e2e-tests/playwright.config.ts` — no auth dependencies:
-- `ai-chromium`
-- `ai-firefox`
-- `ai-webkit`
-- `ai-mobile-safari`
-- `ai-mobile-chrome`
-
-**Generated tests saved to:**
-`C:\Users\RajasekharUdumula\Desktop\QA_Automation_Banorte\skye-e2e-tests\tests\generated\`
-
----
-
-## ⚠️ Critical Config Fix — `env_ignore_empty=True`
-
-Windows had `ANTHROPIC_API_KEY=""` set as an OS environment variable (empty string).
-Pydantic-settings gives OS env vars priority over `.env` values — so the key read as empty.
-
-**Fix applied in `config.py`:**
+### Key constants in `github_actions_runner.py`
 ```python
-model_config = SettingsConfigDict(
-    env_file=str(_ENV_FILE),
-    env_file_encoding="utf-8",
-    env_ignore_empty=True,   # ← ignores OS vars set to "" so .env values win
-)
+AI_TESTS_BRANCH  = settings.AI_TESTS_BRANCH   # "ai-playwright-tests"
+TRIGGER_BRANCH   = "main"                       # workflow YAML lives on main
+MGA_WORKFLOW_PATH = ".github/workflows/mga-tests.yml"
 ```
-Without this, any OS-level empty env var silently overrides the `.env` file.
+
+### Flow
+1. User selects spec from Run tab → `POST /api/run-spec` with `branch=local-mga`
+2. Backend routes to `_execute_mga_gha_and_update()`
+3. `run_mga_via_gha()` ensures workflow exists → triggers `workflow_dispatch` on `main`
+4. Workflow checkouts the **spec's branch** (via `branch` input) — this is how generated specs on `ai-playwright-tests` are found
+5. Polls GHA every 5s → streams status to live logs via Redis pub/sub
+6. On completion: updates DB run record with exit_code + GHA URL
+
+### ⚠️ Branch checkout fix (critical)
+Generated specs live on `ai-playwright-tests` branch, NOT `main`. The workflow YAML uses:
+```yaml
+- uses: actions/checkout@v4
+  with:
+    ref: ${{ github.event.inputs.branch || 'main' }}
+    fetch-depth: 0
+```
+This allows running any spec from any branch.
 
 ---
 
-## 🔑 Key Technical Decisions
+## 🎯 Local + GitHub Actions Run Target
 
-| Decision | Reason |
-|----------|--------|
-| `BASE_URL = ''` in client.ts | Relative URLs go through Vite proxy → no CORS |
-| Vite port `5174` with `strictPort: true` | Port 5173 occupied by another app |
-| `Path(__file__).resolve().parent / ".env"` | Avoids CWD-relative .env failure |
-| Lazy LLM client init | Safe when only one provider key is configured |
-| Removed `thinking` param from Anthropic | SDK v0.84.0 requires `betas` header for thinking |
-| `venv/` (not `.venv/`) | That's where pip installed packages |
+**Feature:** Users choose where to run tests — locally or via GitHub Actions — via a dropdown in the Run Testcase tab.
+
+### How it works
+- **`run_target`** field on `ExecutionRun` model: `"local"` or `"github_actions"`
+- **Local execution** (`execution_engine.py`):
+  - `_local_sync_worker()` — background thread runs `npx playwright test` via `subprocess.Popen`
+  - `run_test_locally()` — async wrapper: Redis pub/sub, spawn thread, drain queue
+  - Thread+Queue pattern avoids Windows `SelectorEventLoop` limitation
+  - Playwright project name resolved per-project (MGA uses `mga-chromium`, Banorte uses `ai-chromium`)
+- **GitHub Actions** — existing flow via `github_actions_runner.py` (unchanged)
+- **Routing** in `main.py run_spec_endpoint()`:
+  ```
+  run_target == "local"     → _execute_local_and_update()
+  branch == "local-mga"     → _execute_mga_gha_and_update()
+  else                      → _execute_spec_and_update()
+  ```
+- **Frontend**: Run Target dropdown in Execution Parameters card. Target column in execution history table.
+
+### DB migration
+```sql
+ALTER TABLE execution_runs ADD COLUMN run_target VARCHAR(20) DEFAULT 'github_actions' NOT NULL;
+```
+
+---
+
+## 🌓 Dark Mode / Light Mode Toggle
+
+**Feature:** Users toggle between dark and light themes via a sun/moon button in the header.
+
+### Architecture
+- **CSS Custom Properties**: 40+ variables defined in `index.css` for both `[data-theme="dark"]` and `[data-theme="light"]`
+- **ThemeContext** (`context/ThemeContext.tsx`): React context providing `mode`, `isDark`, `toggleTheme()`
+- **Persistence**: `localStorage` key `ai-sdet-theme` — remembers preference across sessions
+- **Ant Design**: Switches between `theme.darkAlgorithm` and `theme.defaultAlgorithm`
+
+### Key design decisions
+1. **CSS variable approach** means **zero changes** in component files — they import `colors` from `theme.ts` which now returns `var(--xxx)` references
+2. **Terminal stays dark** in both modes for readability
+3. **Accent colors** (indigo, violet, emerald, amber) are static — work on both backgrounds
+4. **Smooth transitions** via `transition: background-color 0.3s ease` on key elements
+5. **Mode-aware Ant tokens**: `getAntThemeTokens(mode)` and `getAntComponentTokens(mode)` in `theme.ts`
+
+### Files
+| File | Role |
+|------|------|
+| `context/ThemeContext.tsx` | State management + localStorage + `data-theme` attribute |
+| `theme.ts` | `colors` object (CSS var refs) + `getAntThemeTokens(mode)` + `getAntComponentTokens(mode)` |
+| `index.css` | CSS variable definitions (dark + light) + all selectors use `var(--xxx)` |
+| `App.tsx` | `<ThemeProvider>` wrapper + toggle button in header |
+
+---
+
+## 🖥️ RunTab UI — Drag-to-Resize Splitter
+
+The right panel of Run Testcase tab has two sections separated by a draggable divider:
+- **Top:** Live Logs terminal (default 55% height)
+- **Bottom:** Execution History table (default 45% height)
+
+Drag the **violet pill handle** between them to resize. Clamped 20%–80%.
+Default tags are **empty** (no pre-selected regression tag).
 
 ---
 
@@ -265,3 +374,51 @@ Quick reference:
 5. Wrong playwright projects → fixed to `ai-chromium`, `ai-firefox`, etc.
 6. Duplicate `TextArea` declaration → removed duplicate
 7. Multi-LLM provider → `llm_orchestrator.py` with Anthropic + Gemini routing
+8. DB session bug in generate-script → use `AsyncSessionLocal()` inside generator
+9. Race condition in run-test → `await db.commit()` before `asyncio.create_task()`
+10. `ai-chromium not found` → push `playwright.config.ts` to GitHub + sync step in workflow
+11. Live logs missing → `pub()` writes to both Redis pub/sub AND history list
+12. MGA `NotImplementedError` (local subprocess on Windows) → switched to GitHub Actions
+13. MGA private network not reachable from GH cloud → self-hosted runner at `C:\actions-runner`
+14. `No tests found` in GHA → added `branch` input + `ref:` in checkout step
+15. npm cache causing 583MB upload hang → removed `cache: 'npm'` from `actions/setup-node`
+16. Multi-project support → `Project` model, CRUD endpoints, `ProjectContext`, per-project config fallback
+17. Spec files "not found" → `list_spec_files_from_branch()` updated to accept per-project `repo`/`token` kwargs
+18. Local run target → `run_test_locally()` via thread+queue pattern, `run_target` field on `ExecutionRun`
+19. MGA `ai-chromium not found` locally → per-project Playwright project mapping (MGA=`mga-chromium`, Banorte=`ai-chromium`)
+20. Dark/Light mode toggle → CSS variables + ThemeContext + Ant Design algorithm switching
+
+---
+
+## 🤖 Planned: Hybrid Playwright MCP Integration (Session 21)
+
+### Pipeline
+```
+Playwright MCP → AI browses live app, extracts DOM/locators
+       ↓
+LLM Orchestrator → Applies skye-e2e-tests conventions (fixtures, steps, assertions)
+       ↓
+Script Validator → tsc --noEmit confirms TypeScript validity
+       ↓
+Execution Engine → Runs spec locally or via GitHub Actions
+```
+
+### New Tools Required
+| Tool | Package | Purpose |
+|------|---------|---------|
+| Playwright MCP | `@playwright/mcp` (npm) | Browser automation via MCP protocol |
+| Playwright Python | `playwright` (pip) | Backend browser control |
+
+### New Components (To Build)
+| Component | Description |
+|-----------|-------------|
+| `AIBrowserTab.tsx` | New frontend tab — URL input, live snapshot viewer, locator panel, generate button |
+| `/api/mcp-browse` | Backend route — start browser session, navigate to URL |
+| `/api/mcp-snapshot` | Backend route — capture accessibility tree snapshot |
+| `llm_orchestrator.py` | Enhanced — accepts MCP context (DOM snapshot + locators) alongside Excel test cases |
+
+### Why MCP over CLI?
+- **CLI (`codegen`)**: Records manual actions → raw code, no conventions, needs refactoring
+- **MCP**: AI sees live DOM → generates convention-compliant scripts with `fixtures`, `test.step()`, `skye`/`banorte` objects
+
+> See `memory.md` Session 21 for full architecture details.
