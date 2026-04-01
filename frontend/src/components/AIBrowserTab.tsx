@@ -228,7 +228,8 @@ export default function AIBrowserTab() {
   const isPaused = sessionStatus === 'paused';
   const isActive = sessionStatus === 'active';
   const isGenerating = sessionStatus === 'generating';
-  const canStart = sessionStatus === 'idle' || sessionStatus === 'completed' || sessionStatus === 'error';
+  const isStarting = sessionStatus === 'starting';
+  const canStart = sessionStatus === 'idle' || sessionStatus === 'completed' || sessionStatus === 'error' || isStarting;
   const canExplore = isExploring || isPaused || isActive;
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -324,7 +325,7 @@ export default function AIBrowserTab() {
               className="gradient-btn"
               style={{ flex: 1 }}
               onClick={handleStart}
-              loading={sessionStatus === 'starting'}
+              loading={isStarting}
             >
               Start Exploration
             </Button>

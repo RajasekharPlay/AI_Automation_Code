@@ -1,6 +1,7 @@
 # ─── Cloned / external framework (not part of this repo) ───
 QA_Automation_Banorte/
 AI_Automation_MGA/
+framework-repos/
 
 # ─── Python ─────────────────────────────────────────────────
 backend/venv/
@@ -19,6 +20,7 @@ backend/.env
 .env
 .env.local
 .env.*.local
+.env.docker
 
 # ─── Node / frontend ────────────────────────────────────────
 frontend/node_modules/

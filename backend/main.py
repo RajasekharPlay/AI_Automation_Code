@@ -841,19 +841,24 @@ async def run_spec_endpoint(
         # Each project's playwright.config.ts may use different naming:
         #   MGA:     mga-chromium, webkit-auth, chromium-no-auth
         #   Banorte: ai-chromium, ai-firefox, ai-webkit
-        _mga_browser_map = {
-            "chromium": "mga-chromium",
-            "firefox":  "mga-chromium",   # MGA only has mga-chromium currently
-            "webkit":   "webkit-auth",
-        }
-        pw_project_name = None  # None → use default ai-* mapping
-        # Detect MGA from project config name OR from the resolved directory path
+        # Use ai-chromium for generated tests (matches .*generated\/.*\.spec\.ts)
+        # Use mga-chromium for MGA-named tests (matches .*MGA.*\.spec\.ts)
+        pw_project_name = None  # None → use default ai-* mapping from execution_engine
         is_mga = False
         if proj_cfg:
             is_mga = "mga" in proj_cfg.get("name", "").lower()
         if not is_mga:
             is_mga = "mga" in project_dir.lower()
-        if is_mga:
+        if is_mga and spec_file_path and "generated/" in spec_file_path:
+            # Generated specs → ai-chromium project
+            pw_project_name = "ai-chromium"
+        elif is_mga:
+            # Non-generated MGA specs → mga-chromium project
+            _mga_browser_map = {
+                "chromium": "mga-chromium",
+                "firefox":  "mga-chromium",
+                "webkit":   "webkit-auth",
+            }
             pw_project_name = _mga_browser_map.get(browser.lower())
         asyncio.create_task(
             _execute_local_and_update(

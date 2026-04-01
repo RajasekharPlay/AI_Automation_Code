@@ -99,17 +99,26 @@ def _local_sync_worker(
             return
 
         # Resolve spec file path — could be absolute or relative
-        spec = Path(spec_path)
+        # Strip skye-e2e-tests/ prefix if project_dir already ends with it
+        cleaned_path = spec_path
+        if spec_path.startswith("skye-e2e-tests/") and str(project).replace("\\", "/").endswith("skye-e2e-tests"):
+            cleaned_path = spec_path.removeprefix("skye-e2e-tests/")
+
+        spec = Path(cleaned_path)
         if not spec.is_absolute():
-            spec = project / spec_path
+            spec = project / cleaned_path
         if not spec.exists():
-            # Try stripping the skye-e2e-tests/ prefix if present
+            # Try other variants
             alt = project / spec_path.removeprefix("skye-e2e-tests/")
+            alt2 = project / spec_path
             if alt.exists():
                 spec = alt
+            elif alt2.exists():
+                spec = alt2
             else:
                 log(f"[ERROR] Spec file not found: {spec}")
-                log(f"  Tried: {spec_path}")
+                log(f"  Tried: {cleaned_path}")
+                log(f"  Also tried: {spec_path.removeprefix('skye-e2e-tests/')}")
                 log(f"  In directory: {project_dir}")
                 msg_q.put(("done", 1, ""))
                 return
@@ -118,7 +127,13 @@ def _local_sync_worker(
         pw_project = playwright_project or _resolve_playwright_project(browser)
         rel_spec = str(spec.relative_to(project)).replace("\\", "/")
 
-        cmd_parts = ["npx", "playwright", "test", rel_spec, f"--project={pw_project}"]
+        cmd_parts = [
+            "npx", "playwright", "test", rel_spec,
+            f"--project={pw_project}",
+            "--retries=0",
+            "--timeout=60000",
+            "--reporter=list",
+        ]
         if execution_mode == "headed":
             cmd_parts.append("--headed")
 

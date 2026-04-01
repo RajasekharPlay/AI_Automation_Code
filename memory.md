@@ -654,6 +654,49 @@ The hybrid pipeline combines:
 
 ---
 
+## Session 22 — Docker Compose Setup
+
+### Overview
+Created a full Docker Compose configuration to containerize the entire platform. `docker compose up` brings all 4 services online with zero manual setup.
+
+### Files Created (7 new, 0 modified)
+| File | Purpose |
+|------|---------|
+| `Dockerfile.backend` | Python 3.11 slim + Node.js 20 + Playwright Chromium, serves FastAPI on :8000 |
+| `Dockerfile.frontend` | Multi-stage: Node 20 build → Nginx 1.25 serve (~25MB image) |
+| `nginx.conf` | Reverse proxy: `/api/` + `/ws/` → backend, SPA fallback, SSE buffering off |
+| `docker-compose.yml` | 4 services (postgres, redis, backend, frontend) + healthchecks + named volumes |
+| `.env.docker.example` | Template for API keys & secrets (LLM, GitHub, Postgres) |
+| `.dockerignore` | Excludes venv, node_modules, .git, framework-repos from build context |
+| `backend/seed_projects_docker.py` | Docker-compatible project seeder with Linux paths (`/workspace/...`) |
+
+### Architecture
+```
+http://localhost:80 → Nginx (frontend) → /api /ws → FastAPI (backend) → PostgreSQL + Redis
+```
+- Only port 80 exposed to host
+- All services on `ai-platform-net` bridge network
+- Credentials via `.env.docker` file (never baked into images)
+- Framework repos optional — mounted as volumes for `run_target=local`
+
+### Key Decisions
+1. **Backend image includes Node.js** — required for `npx playwright test` and `npx tsc --noEmit`
+2. **Only Chromium installed** — saves ~800MB vs all browsers
+3. **Nginx production serve** — Vite dev server not suitable for production
+4. **SSE support** — `proxy_buffering off` in nginx.conf for streaming endpoints
+5. **WebSocket support** — upgrade headers + 24h read timeout
+6. **Zero code changes** — all 7 files are new additions, existing code untouched
+
+### Usage
+```bash
+cp .env.docker.example .env.docker    # Fill in API keys
+docker compose up --build -d           # Build + start
+docker compose exec backend python seed_projects_docker.py  # Seed projects (first time)
+# Access: http://localhost
+```
+
+---
+
 ## 🔜 Future Improvements (Not Yet Done)
 
 - [ ] **Playwright MCP integration** — AI-driven browser exploration + script generation (Session 21 plan)

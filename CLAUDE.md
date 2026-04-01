@@ -57,12 +57,55 @@ AI_Automation_Code/
 │
 ├── CLAUDE.md                        # ← THIS FILE (Claude reads on session start)
 ├── memory.md                        # Full changelog of all changes made
-└── README.md                        # Setup guide
+├── README.md                        # Setup guide
+│
+├── Dockerfile.backend               # Python 3.11 + Node.js 20 + Playwright Chromium
+├── Dockerfile.frontend              # Multi-stage: Node build → Nginx serve
+├── docker-compose.yml               # 4 services: postgres, redis, backend, frontend
+├── nginx.conf                       # Reverse proxy /api + /ws → backend
+├── .env.docker.example              # Docker env vars template
+└── .dockerignore                    # Build context exclusions
 ```
 
 ---
 
-## 🚀 How to Start Services
+## 🐳 Docker Compose (Recommended)
+
+```bash
+# First time
+cp .env.docker.example .env.docker    # Fill in API keys
+docker compose up --build -d           # Build + start all 4 services
+docker compose exec backend python seed_projects_docker.py  # Seed projects
+
+# Access
+# UI:        http://localhost
+# API docs:  http://localhost/api/docs
+# Health:    http://localhost/api/health
+
+# Manage
+docker compose logs -f backend         # Stream backend logs
+docker compose ps                      # Check health status
+docker compose down                    # Stop all
+docker compose down -v                 # Full reset (delete DB data)
+
+# (Optional) For local test execution
+mkdir -p framework-repos
+git clone https://github.com/RajasekharPlay/AI_Automation_MGA.git framework-repos/mga
+git clone https://github.com/RajasekharPlay/QA_Automation_Banorte.git framework-repos/banorte
+docker compose exec backend bash -c "cd /workspace/mga/skye-e2e-tests && npm ci"
+```
+
+### Docker Services
+| Service | Image | Port | Healthcheck |
+|---------|-------|------|-------------|
+| `postgres` | `postgres:15-alpine` | 5432 (internal) | `pg_isready` |
+| `redis` | `redis:7-alpine` | 6379 (internal) | `redis-cli ping` |
+| `backend` | Custom (Python 3.11 + Node.js 20) | 8000 (internal) | `curl /health` |
+| `frontend` | Custom (Nginx) | **80 (exposed)** | — |
+
+---
+
+## 🚀 How to Start Services (Local / Non-Docker)
 
 ### Backend (FastAPI on port 8000)
 ```powershell

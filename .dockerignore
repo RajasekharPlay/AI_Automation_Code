@@ -1,0 +1,46 @@
+# ── Docker Build Context Exclusions ──
+# Prevents sending large/irrelevant files to Docker daemon
+
+# Python virtual environments
+backend/venv/
+backend/.venv/
+backend/__pycache__/
+
+# Secrets (never bake into images)
+backend/.env
+.env.docker
+
+# Frontend build artifacts & deps (rebuilt in container)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Git
+.git/
+.gitignore
+
+# Framework repos (mounted as volumes, not built into image)
+framework-repos/
+AI_Automation_MGA/
+
+# MCP server (separate package)
+mcp-server/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code
+.claude/
+
+# Logs & temp
+*.log
+*.tmp
+__pycache__/
+node_modules/
+
+# Docker files (not needed in build context for the other Dockerfile)
+docker-compose.yml
+.env.docker.example

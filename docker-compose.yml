@@ -1,0 +1,104 @@
+# ── AI Test Automation Platform — Docker Compose ──
+# Usage:
+#   cp .env.docker.example .env.docker   # Fill in API keys
+#   docker compose up --build -d          # Build + start all services
+#   docker compose ps                     # Check health
+#   docker compose logs -f backend        # Stream backend logs
+#   docker compose down                   # Stop all
+#   docker compose down -v                # Stop + delete volumes (full reset)
+
+services:
+  # ── PostgreSQL Database ──
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ai_test_platform
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - ai-platform-net
+
+  # ── Redis Cache + PubSub ──
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - ai-platform-net
+
+  # ── FastAPI Backend ──
+  # Python 3.11 + Node.js 20 + Playwright Chromium
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    env_file: .env.docker
+    environment:
+      # Override DB/Redis to use Docker service names (not localhost)
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/ai_test_platform
+      SYNC_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/ai_test_platform
+      REDIS_URL: redis://redis:6379/0
+      # Framework paths inside container
+      PLAYWRIGHT_PROJECT_PATH: /workspace/banorte/skye-e2e-tests
+      MGA_PLAYWRIGHT_PROJECT_PATH: /workspace/mga/skye-e2e-tests
+      FRONTEND_URL: http://localhost:5174
+    volumes:
+      # Optional: Mount framework repos for local test execution (run_target=local)
+      # Clone repos first:
+      #   git clone https://github.com/RajasekharPlay/AI_Automation_MGA.git framework-repos/mga
+      #   git clone https://github.com/RajasekharPlay/QA_Automation_Banorte.git framework-repos/banorte
+      - ./framework-repos/mga:/workspace/mga
+      - ./framework-repos/banorte:/workspace/banorte
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - ai-platform-net
+
+  # ── Frontend (Nginx) ──
+  # Serves React build + reverse proxies /api and /ws to backend
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    restart: unless-stopped
+    ports:
+      - "5174:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - ai-platform-net
+
+# ── Docker Network ──
+networks:
+  ai-platform-net:
+    driver: bridge
+
+# ── Persistent Volumes ──
+volumes:
+  pgdata:
+  redis-data:

@@ -1,0 +1,45 @@
+# ── Backend Dockerfile ──
+# Python 3.11 + Node.js 20 + Playwright Chromium
+# Serves FastAPI on port 8000
+
+FROM python:3.11-slim-bookworm
+
+# ── System dependencies + Node.js 20 ──
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    build-essential \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Verify installations
+RUN python --version && node --version && npm --version
+
+WORKDIR /app/backend
+
+# ── Python dependencies (cached layer) ──
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ── Copy backend source ──
+COPY backend/ .
+
+# ── Install Playwright Chromium with system deps ──
+# Only chromium to keep image size reasonable (~400MB)
+# Add firefox/webkit if needed: npx playwright install --with-deps
+RUN npx playwright install --with-deps chromium
+
+# ── Create directories for generated tests ──
+RUN mkdir -p /workspace/mga/skye-e2e-tests/tests/generated \
+    && mkdir -p /workspace/banorte/skye-e2e-tests/tests/generated
+
+EXPOSE 8000
+
+# ── Health check ──
+HEALTHCHECK --interval=10s --timeout=5s --retries=5 --start-period=30s \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# ── Start FastAPI ──
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
