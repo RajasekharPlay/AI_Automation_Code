@@ -23,11 +23,13 @@ AI_Automation_Code/
 │   ├── main.py                      # All API routes
 │   ├── config.py                    # Settings loaded from .env (absolute path)
 │   ├── database.py                  # SQLAlchemy async + AsyncSessionLocal
-│   ├── models.py                    # TestCase, GeneratedScript, ExecutionRun, UserPrompt, Project
+│   ├── models.py                    # TestCase, GeneratedScript, ExecutionRun, UserPrompt, Project, DomSnapshot
 │   ├── excel_parser.py              # Parses .xlsx → TestCase objects
 │   ├── framework_loader.py          # GitHub API → fetches skye-e2e-tests/ files → Redis cache
-│   ├── llm_orchestrator.py          # Multi-provider: Anthropic Claude + Google Gemini
-│   ├── claude_orchestrator.py       # Legacy (superseded by llm_orchestrator.py)
+│   ├── llm_orchestrator.py          # Multi-provider: Anthropic Claude + Google Gemini + fix mode
+│   ├── dom_crawler.py               # Playwright DOM crawler (subprocess, Redis cache, auth support)
+│   ├── dom_chunker.py               # DOM → concise LLM context (max 15K chars, keyword scoring)
+│   ├── _crawl_worker.py             # Standalone Playwright subprocess (auto-login support)
 │   ├── script_validator.py          # tsc --noEmit validation + self-correction
 │   ├── execution_engine.py          # Local npx playwright test + Allure + run_test_locally()
 │   ├── github_actions_runner.py     # GitHub Actions orchestration for MGA + Banorte
@@ -39,7 +41,7 @@ AI_Automation_Code/
 │
 ├── frontend/                        # React + TypeScript + Ant Design + Vite
 │   ├── src/
-│   │   ├── App.tsx                  # 5-tab layout with dark/light toggle: Dashboard / AI Phase / Run Testcase / AI Browser / Projects
+│   │   ├── App.tsx                  # 4-tab layout with dark/light toggle: Dashboard / AI Phase / Run Testcase / Projects
 │   │   ├── api/client.ts            # All API calls (relative URLs via Vite proxy)
 │   │   ├── types/index.ts           # TypeScript interfaces (incl. Project)
 │   │   ├── theme.ts                 # Centralized design tokens — CSS variable refs + mode-aware Ant tokens
@@ -232,9 +234,14 @@ SECRET_KEY=banorte-ai-platform-secret-2024
 | GET | `/api/projects/{id}` | Get single project |
 | PUT | `/api/projects/{id}` | Update project (JSON body) |
 | DELETE | `/api/projects/{id}` | Soft-delete (sets is_active=false) |
+| POST | `/api/crawl-page` | Crawl URL → extract DOM elements, screenshot, auto-login |
+| GET | `/api/dom-snapshots` | List DOM snapshots (project/url filter) |
+| GET | `/api/dom-snapshots/{id}` | Full snapshot detail (elements, screenshot, dom_context) |
+| GET | `/api/dom-snapshots/{id}/compare/{other_id}` | Diff two snapshots (added/removed/changed) |
+| POST | `/api/fix-script` | SSE stream: auto-fix failed test using error analysis |
 
 > **Multi-project filtering**: Routes that accept `project_id` (query param or Form field):
-> `parse-excel`, `test-cases`, `generate-script`, `scripts`, `runs`, `spec-files`, `run-spec`.
+> `parse-excel`, `test-cases`, `generate-script`, `scripts`, `runs`, `spec-files`, `run-spec`, `crawl-page`, `dom-snapshots`.
 > When `project_id` is provided, results are filtered. When omitted, all data is returned.
 
 ---
@@ -433,35 +440,48 @@ Quick reference:
 
 ---
 
-## 🤖 Planned: Hybrid Playwright MCP Integration (Session 21)
+## 🕷️ DOM Crawler + AI Script Enhancement Pipeline (Sessions 23-25)
 
-### Pipeline
+### Full Pipeline (Built & Working)
 ```
-Playwright MCP → AI browses live app, extracts DOM/locators
+User enters URL in AI Phase tab → POST /api/crawl-page
        ↓
-LLM Orchestrator → Applies skye-e2e-tests conventions (fixtures, steps, assertions)
+Playwright crawls page (headless, auto-login if project creds set)
        ↓
-Script Validator → tsc --noEmit confirms TypeScript validity
+Extracts: interactive elements + accessibility tree + screenshot
        ↓
-Execution Engine → Runs spec locally or via GitHub Actions
+Saves to PostgreSQL (DomSnapshot) + Redis cache (1hr)
+       ↓
+dom_chunker builds concise context (max 15K chars, keyword-scored)
+       ↓
+LLM sees: framework context + REAL DOM selectors + test case
+       ↓
+Generates .spec.ts with ACTUAL selectors (not invented)
+       ↓
+Safety nets → tsc validate → save → commit to GitHub
+       ↓
+If test FAILS → Auto-Fix: error + code → Claude → fixed script
 ```
 
-### New Tools Required
-| Tool | Package | Purpose |
-|------|---------|---------|
-| Playwright MCP | `@playwright/mcp` (npm) | Browser automation via MCP protocol |
-| Playwright Python | `playwright` (pip) | Backend browser control |
+### Key Components
+| Component | File | Purpose |
+|-----------|------|---------|
+| DOM Crawler | `backend/dom_crawler.py` | Orchestrates subprocess crawl, Redis cache |
+| Crawl Worker | `backend/_crawl_worker.py` | Standalone Playwright process (auto-login support) |
+| DOM Chunker | `backend/dom_chunker.py` | DOM → LLM context string (keyword relevance scoring) |
+| Fix Mode | `backend/llm_orchestrator.py` | `stream_fix_script()` — auto-fix with error analysis |
+| DOM Snapshots | `backend/models.py` | `DomSnapshot` PostgreSQL model for history tracking |
 
-### New Components (To Build)
-| Component | Description |
-|-----------|-------------|
-| `AIBrowserTab.tsx` | New frontend tab — URL input, live snapshot viewer, locator panel, generate button |
-| `/api/mcp-browse` | Backend route — start browser session, navigate to URL |
-| `/api/mcp-snapshot` | Backend route — capture accessibility tree snapshot |
-| `llm_orchestrator.py` | Enhanced — accepts MCP context (DOM snapshot + locators) alongside Excel test cases |
+### Auth Crawling
+When a project has `pw_email` + `pw_password` configured, the crawler auto-logs in via:
+1. Navigate to `pw_host` (login page)
+2. Fill `Enter username` placeholder with `pw_email`
+3. Fill `Password here` placeholder with `pw_password`
+4. Click `Log in` button
+5. Wait for redirect → then navigate to target URL
 
-### Why MCP over CLI?
-- **CLI (`codegen`)**: Records manual actions → raw code, no conventions, needs refactoring
-- **MCP**: AI sees live DOM → generates convention-compliant scripts with `fixtures`, `test.step()`, `skye`/`banorte` objects
-
-> See `memory.md` Session 21 for full architecture details.
+### Important Notes
+- Backend must start **without `--reload`** flag for Playwright subprocess to work on Windows
+- Authenticated crawls skip Redis cache (session-specific)
+- DOM snapshots stored permanently in PostgreSQL (compare with `/api/dom-snapshots/{id}/compare/{other_id}`)
+- Auto-fix limited to 2 retries per failed run

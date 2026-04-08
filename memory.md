@@ -697,13 +697,121 @@ docker compose exec backend python seed_projects_docker.py  # Seed projects (fir
 
 ---
 
+## Session 23 — Day 1: DOM Crawler + Enhanced Script Generation
+
+### Overview
+Added Playwright-based DOM crawler that crawls live app pages, extracts interactive elements + accessibility tree + screenshots, and injects real DOM selectors into the LLM prompt for more accurate Playwright/TypeScript script generation.
+
+### Files Created (3 new)
+| File | Purpose |
+|------|---------|
+| `backend/dom_crawler.py` | Async crawler using subprocess worker, Redis cache (1hr TTL) |
+| `backend/dom_chunker.py` | Transforms DOM elements → concise LLM context (max 15K chars), keyword relevance scoring |
+| `backend/_crawl_worker.py` | Standalone Playwright subprocess (avoids Windows SelectorEventLoop issue) |
+
+### Files Modified (5)
+| File | Changes |
+|------|---------|
+| `backend/llm_orchestrator.py` | Added `dom_context` param to `stream_script()`, `_main_user_content()`, builders. Added SYSTEM_PROMPT rule 12 (use real DOM selectors) |
+| `backend/main.py` | New `POST /api/crawl-page` endpoint + `page_url` Form param in `generate_script_endpoint()` |
+| `backend/requirements.txt` | Added `playwright>=1.44.0` |
+| `frontend/src/api/client.ts` | New `crawlPage()` function + `pageUrl` param in `createScriptStream()` |
+| `frontend/src/components/AIPhaseTab.tsx` | New "3. Page URL" card with crawl button, screenshot preview, element count |
+
+### Key Technical Decisions
+- **Subprocess approach**: Playwright sync API uses its own event loop → can't run inside FastAPI's asyncio. Solution: `_crawl_worker.py` runs as a separate process, communicates via stdin JSON / stdout JSON.
+- **Windows `NotImplementedError`**: Solved by subprocess isolation (not threads, not `run_in_executor`).
+- **Backend `--reload` flag breaks Playwright**: Must start uvicorn WITHOUT `--reload` for crawl to work.
+- **DOM context injected between framework context and test case JSON** in LLM prompt.
+
+---
+
+## Session 24 — Day 2: Failure Feedback Loop + POM Generation + UI Enhancements
+
+### Overview
+Added self-healing tests (auto-fix failed scripts via Claude), page object model file generation, and UI improvements.
+
+### Feature 1: Failure Feedback Loop (Self-Healing Tests)
+**Flow:** Failed run → "Auto-Fix" button → fetch logs from Redis → extract error → Claude generates fix → tsc validates → save as new script
+
+| File | Changes |
+|------|---------|
+| `backend/llm_orchestrator.py` | `FIX_SYSTEM_PROMPT` constant + `stream_fix_script()` function |
+| `backend/main.py` | `_extract_error_from_logs()` helper + `POST /api/fix-script` SSE endpoint |
+| `frontend/src/api/client.ts` | `createFixStream()` SSE consumer |
+| `frontend/src/components/RunTab.tsx` | Auto-Fix button (ThunderboltOutlined) on failed runs + Drawer with Monaco editor + validation status + Re-Run |
+
+**Key fix:** `test_case_id` FK violation when run has no `script_id` → fallback to first test case in project.
+
+### Feature 2: POM File Generation
+**Flow:** User asks "create PetsPage class" → LLM outputs with markers `// === PAGE_CLASS: PetsPage.ts ===` and `// === SPEC_FILE ===` → backend splits → saves page class to `pages/` + spec to `tests/generated/`
+
+| File | Changes |
+|------|---------|
+| `backend/llm_orchestrator.py` | SYSTEM_PROMPT rule 10 rewritten for dual-mode output (single file or page class + spec) |
+| `backend/main.py` | `_extract_and_save_page_class()` function + integrated in `generate_script_endpoint()` |
+
+### Feature 3: UI Enhancements
+- **RunTab**: Auto-Fix Drawer with streaming Monaco editor, validation badge, Re-Run button
+- **AIPhaseTab**: Collapsible elements list after crawl preview (`<details>` with monospace element list)
+- **Extra Instructions fix**: `_strip_markdown_fences()` safety net strips markdown when LLM ignores SYSTEM_PROMPT
+
+### Bug Fixes Applied
+- `_strip_markdown_fences()` — extracts spec code from markdown-fenced multi-file output
+- SYSTEM_PROMPT rule 10 — tells LLM to never output markdown fences or multi-file headers
+- AIPhaseTab JSX — fixed missing `<>` fragment wrapper for crawlResult conditional
+- Fix endpoint — added `try/except` around UUID parsing, better error messages
+
+---
+
+## Session 25 — Persistent DOM Snapshots + Authenticated Crawling
+
+### Overview
+Added PostgreSQL storage for DOM crawl results (track history, compare changes) and auto-login support for crawling authenticated pages using project credentials.
+
+### Persistent DOM Snapshots
+| File | Changes |
+|------|---------|
+| `backend/models.py` | New `DomSnapshot` model (url, url_hash, title, elements JSON, accessibility_tree, screenshot_b64, dom_context, created_at) |
+| `backend/main.py` | Updated `POST /api/crawl-page` to save DomSnapshot to DB |
+| `backend/main.py` | New `GET /api/dom-snapshots` — list with project/url filters |
+| `backend/main.py` | New `GET /api/dom-snapshots/{id}` — full detail |
+| `backend/main.py` | New `GET /api/dom-snapshots/{id}/compare/{other_id}` — diff two snapshots (added/removed/changed elements) |
+
+### Authenticated Crawling
+| File | Changes |
+|------|---------|
+| `backend/_crawl_worker.py` | Reads auth from stdin JSON, auto-login via Innoveo Skye flow (fill username/password, click Log in) |
+| `backend/dom_crawler.py` | `crawl_page()` accepts `auth` dict, passes to subprocess via stdin, skips Redis cache for authenticated crawls |
+| `backend/main.py` | `crawl_page_endpoint()` loads project credentials (pw_email, pw_password) from DB when project_id provided |
+
+**Login flow:** Navigate to `pw_host` → fill `Enter username` with `pw_email` → fill `Password here` with `pw_password` → click `Log in` → wait → navigate to target URL.
+
+---
+
+## 📊 Current State (Session 25)
+
+| Service | Status | Port |
+|---------|--------|------|
+| Backend (FastAPI/uvicorn) | Running | 8000 |
+| Frontend (Vite/React) | Running | 5174 |
+| PostgreSQL | Running | 5432 |
+| Redis | Running | 6379 |
+| Docker Desktop | Installed | — |
+
+### DB Models (7)
+Project, TestCase, GeneratedScript, ExecutionRun, UserPrompt, DomSnapshot
+
+### API Endpoints (30+)
+All original + `POST /api/crawl-page`, `GET /api/dom-snapshots`, `GET /api/dom-snapshots/{id}`, `GET /api/dom-snapshots/{id}/compare/{other_id}`, `POST /api/fix-script`
+
+---
+
 ## 🔜 Future Improvements (Not Yet Done)
 
-- [ ] **Playwright MCP integration** — AI-driven browser exploration + script generation (Session 21 plan)
-- [ ] Self-correction loop: if `tsc --noEmit` fails, re-prompt LLM with error to fix it
 - [ ] Dashboard: real-time run status polling
 - [ ] Support multiple Excel sheets in one upload
 - [ ] Token usage tracking dashboard (compare Anthropic vs Gemini cost)
-- [ ] Install self-hosted runner as Windows service (requires admin PowerShell: `.\svc.cmd install`)
-- [ ] Parameterize `framework_loader.py`, `llm_orchestrator.py` for per-project config
-- [ ] Extra Instructions field — verify it flows through to LLM prompt properly
+- [ ] Install self-hosted runner as Windows service
+- [ ] DOM snapshot diff visualization in frontend UI
+- [ ] Auto-fix retry counter visible in Dashboard stats
